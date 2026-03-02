@@ -1,0 +1,34 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "ROS: Build (colcon)",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-lc",
+        "cd ~/ros2_ws && source /opt/ros/humble/setup.bash && colcon build --symlink-install"
+      ],
+      "problemMatcher": ["$gcc"],
+      "group": "build"
+    },
+    {
+      "label": "ROS: Source Workspace",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-lc",
+        "cd ~/ros2_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && echo 'Sourced ROS + workspace'"
+      ]
+    },
+    {
+      "label": "ROS: Clean",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-lc",
+        "cd ~/ros2_ws && rm -rf build install log && echo 'Cleaned build/install/log'"
+      ]
+    }
+  ]
+}

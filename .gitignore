@@ -1,0 +1,29 @@
+# ROS2 / colcon build artifacts
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+*.egg
+
+# IDE / editor
+.idea/
+*.swp
+*.swo
+*~
+
+# OS / WSL metadata
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
+*.Zone.Identifier
+
+# Local workspace / env (optional)
+# *.code-workspace  # uncomment to ignore
