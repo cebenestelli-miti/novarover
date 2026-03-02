@@ -27,3 +27,7 @@ Thumbs.db
 
 # Local workspace / env (optional)
 # *.code-workspace  # uncomment to ignore
+
+# Secrets (for GITHUB_TOKEN when using .env)
+.env
+.env.local
