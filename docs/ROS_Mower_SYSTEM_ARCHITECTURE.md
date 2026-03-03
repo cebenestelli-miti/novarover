@@ -63,7 +63,7 @@ Outputs:
 - Filtered odometry/pose
 - TF/frames consistent with navigation
 
-**Implementation (mower_localization):** Default: forward `/odom/raw` → `/odom` + TF. With `use_ekf:=true`, bringup runs `robot_localization` EKF (config `mower_localization/config/ekf.yaml`) fusing `/odom/raw` and `/imu/data` (e.g. BNO085); planar mode; publishes `/odom` and TF. NEO-M9N: publish `/gps/fix` and `/gps/status`; to fuse GPS, add navsat_transform_node and a second EKF source (see `mower_localization/config/README.md`). Install: `ros-jazzy-robot-localization`.
+**Implementation (mower_localization):** Default: forward `/odom/raw` → `/odom` + TF. With `use_ekf:=true`, EKF fuses `/odom/raw` and `/imu/data` (BNO085); with `use_ekf:=true use_gps:=true`, `navsat_transform_node` converts `/gps/fix` to `/odometry/gps` and EKF fuses odom + IMU + GPS. Config: `ekf.yaml` (no GPS), `ekf_gps.yaml` and `navsat_transform.yaml` (with GPS). Install: `ros-jazzy-robot-localization`.
 
 ### Mission Manager
 Responsibilities:
@@ -137,3 +137,9 @@ A **mock base interface** is provided so the autonomy stack can run and be teste
   - `ros2 launch mower_base bringup.launch.py publish_ultrasonic:=false`
 
 With `publish_ultrasonic:=false`, the mock still publishes heartbeat and odom for testing; it does not publish `/ultrasonic/ranges`, so the real base (or no ultrasonics) can be used.
+
+---
+
+## 8) Gazebo simulation
+
+The same autonomy stack can run in **Gazebo** by having the simulator act as the base: it must publish `/odom/raw`, `/base/heartbeat`, `/ultrasonic/ranges`, and `/mower/stall`, and subscribe to `/cmd_vel`. No changes to safety, mission, or localization logic are required; only the source of base data changes (Gazebo plugins instead of mock or real base). A separate document describes the full setup: **[ROS_Mower_GAZEBO_SIMULATION.md](ROS_Mower_GAZEBO_SIMULATION.md)** — robot model (URDF), world, plugins, topic contract, and sim launch.

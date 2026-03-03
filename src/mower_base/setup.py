@@ -23,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'mock_base_interface_node = mower_base.mock_base_interface_node:main',
+            'real_base_interface_node = mower_base.real_base_interface_node:main',
         ],
     },
 )

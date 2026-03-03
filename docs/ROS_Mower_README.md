@@ -123,7 +123,22 @@ With `publish_ultrasonic:=false`, the mock still publishes heartbeat and odom fo
 
 - **Without IMU (default):** `ros2 launch mower_base bringup.launch.py` — simple node forwards `/odom/raw` → `/odom` + TF.
 - **With BNO085 (IMU):** `ros2 launch mower_base bringup.launch.py use_ekf:=true` — EKF fuses `/odom/raw` and `/imu/data`; config in `mower_localization/config/ekf.yaml`; planar mode; install `ros-jazzy-robot-localization`.
-- **Expected topics for this hardware:** BNO085 → `/imu/data` (Imu, frame `base_link`, REP-103). NEO-M9N (when used) → `/gps/fix` (NavSatFix), `/gps/status` (GpsStatus for safety). To fuse GPS into the EKF, add navsat_transform_node and a second source; see `mower_localization/config/README.md`.
+- **With BNO085 + NEO-M9N (GPS):** `ros2 launch mower_base bringup.launch.py use_ekf:=true use_gps:=true` — EKF fuses `/odom/raw`, `/imu/data`, and `/odometry/gps`; `navsat_transform_node` converts `/gps/fix` → `/odometry/gps`. Config: `ekf_gps.yaml`, `navsat_transform.yaml`; set `magnetic_declination_radians` for your location.
+- **Expected topics:** BNO085 → `/imu/data` (Imu, frame `base_link`, REP-103). NEO-M9N → `/gps/fix` (NavSatFix), `/gps/status` (GpsStatus for safety).
+
+---
+
+# 7️⃣ Gazebo simulation
+
+The autonomy stack can be run in **Gazebo** so you can test missions and safety without hardware. Simulation does not replace the mock base conceptually: Gazebo (with the right plugins) *provides* the same topic contract as the real or mock base (`/odom/raw`, `/base/heartbeat`, `/ultrasonic/ranges`, `/mower/stall`, and subscription to `/cmd_vel`). You then run the normal bringup **without** the mock or real base so that Gazebo is the only source of odometry, heartbeat, and ultrasonics.
+
+**What you need for Gazebo:**
+- **Robot model (URDF):** `mower_description` — differential-drive base, optional ray/sonar plugins for the 6 ultrasonics.
+- **Gazebo world:** A world file (e.g. outdoor or test pad).
+- **Plugins / bridge:** Publish `/odom/raw` and subscribe to `/cmd_vel` (e.g. `libgazebo_ros_diff_drive.so`); publish `/base/heartbeat` at 5–10 Hz; publish 6 ranges as `mower_msgs/UltrasonicArray` on `/ultrasonic/ranges`; publish `/mower/stall` (e.g. always false in sim). Optionally add IMU and GPS plugins if you want to test EKF/GPS in simulation.
+- **Sim launch:** Spawn the model in Gazebo and run the above; start the rest of the stack via bringup with mock/real base disabled (or a dedicated sim bringup that omits base nodes).
+
+**Detailed requirements, topic mapping, and step-by-step setup are in [ROS_Mower_GAZEBO_SIMULATION.md](ROS_Mower_GAZEBO_SIMULATION.md).**
 
 ---
 

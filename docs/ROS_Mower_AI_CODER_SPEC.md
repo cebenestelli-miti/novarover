@@ -195,11 +195,8 @@ With `publish_ultrasonic:=false`, the mock still publishes heartbeat and odom fo
 ## 9) Localization (EKF option and sensors)
 
 - **Default (`use_ekf:=false`):** Simple localization node forwards `/odom/raw` → `/odom` and broadcasts TF `odom` → `base_link`.
-- **With IMU (`use_ekf:=true`):** Bringup runs `robot_localization` EKF node instead, fusing `/odom/raw` (wheel) and `/imu/data` (e.g. BNO085). Planar mode; publishes `/odom` and TF. Config: `mower_localization/config/ekf.yaml`.
-- **Dependency:** `ros-jazzy-robot-localization` (e.g. `sudo apt install ros-jazzy-robot-localization`). `mower_base` has `exec_depend` on `robot_localization` when using EKF.
-- **Sensors (this implementation):**
-  - **BNO085:** Publish `/imu/data` (sensor_msgs/Imu, frame `base_link`, REP-103). Orientation, angular velocity, linear acceleration; gravity removed in EKF config.
-  - **NEO-M9N (when added):** Publish `/gps/fix` (NavSatFix) and `/gps/status` (GpsStatus for safety). To fuse GPS into the EKF, add `navsat_transform_node` and a second source in the EKF config; see `mower_localization/config/README.md`.
-- **Usage:**  
-  - Without IMU: `ros2 launch mower_base bringup.launch.py`  
-  - With BNO085 publishing `/imu/data`: `ros2 launch mower_base bringup.launch.py use_ekf:=true`
+- **With IMU (`use_ekf:=true`):** EKF fuses `/odom/raw` and `/imu/data` (BNO085). Config: `ekf.yaml`.
+- **With IMU + GPS (`use_ekf:=true use_gps:=true`):** `navsat_transform_node` converts `/gps/fix` → `/odometry/gps`; EKF fuses odom + IMU + `/odometry/gps`. Config: `ekf_gps.yaml`, `navsat_transform.yaml`.
+- **Dependency:** `ros-jazzy-robot_localization`. `mower_base` has `exec_depend` on `robot_localization`.
+- **Sensors:** **BNO085** → `/imu/data` (Imu, frame `base_link`, REP-103). **NEO-M9N** → `/gps/fix` (NavSatFix), `/gps/status` (GpsStatus for safety).
+- **Usage:** Default: no fusion. IMU: `use_ekf:=true`. IMU+GPS: `use_ekf:=true use_gps:=true`.

@@ -1,37 +1,40 @@
 # Localization config and sensors
 
-## EKF fusion (use_ekf:=true)
+Requires **robot_localization**: `sudo apt install ros-jazzy-robot-localization`
 
-Requires **robot_localization**:
+## Modes
+
+| Launch | Behavior |
+|--------|----------|
+| (default) | Simple node: `/odom/raw` → `/odom` + TF |
+| `use_ekf:=true` | EKF fuses `/odom/raw` + `/imu/data` (BNO085). Output: `/odom` + TF |
+| `use_ekf:=true use_gps:=true` | EKF fuses `/odom/raw` + `/imu/data` + `/odometry/gps`. NavSat converts `/gps/fix` → `/odometry/gps`. Requires NEO-M9N + BNO085. |
+
+**Commands**
 
 ```bash
-sudo apt install ros-jazzy-robot-localization
-```
+# No fusion
+ros2 launch mower_base bringup.launch.py
 
-Then:
-
-```bash
+# IMU fusion (BNO085)
 ros2 launch mower_base bringup.launch.py use_ekf:=true
+
+# IMU + GPS fusion (BNO085 + NEO-M9N)
+ros2 launch mower_base bringup.launch.py use_ekf:=true use_gps:=true
 ```
 
-The EKF fuses:
+**Config files**
 
-- **`/odom/raw`** – wheel odometry from the base (mock or real).
-- **`/imu/data`** – IMU (orientation, angular velocity, linear acceleration).
-
-Output: **`/odom`** and TF **odom → base_link**.
+- `ekf.yaml` – EKF with odom + IMU only.
+- `ekf_gps.yaml` – EKF with odom + IMU + `/odometry/gps`.
+- `navsat_transform.yaml` – NavSat: `/gps/fix` + `/imu/data` + `/odom` → `/odometry/gps`. Set `magnetic_declination_radians` for your location.
 
 ## Expected sensors and topics
 
-When you add real hardware, these are the topic contracts the stack expects.
-
 ### NEO-M9N (GNSS)
 
-- **Publish:**  
-  - **`/gps/fix`** – `sensor_msgs/msg/NavSatFix`  
-  - **`/gps/status`** – `mower_msgs/msg/GpsStatus` (for safety_manager GPS loss/stale).
-
-Optional later: use **robot_localization** `navsat_transform_node` to feed GPS into the EKF as a second position source (map frame).
+- **Publish:** `/gps/fix` (NavSatFix), `/gps/status` (GpsStatus for safety_manager).
+- With `use_gps:=true`, `navsat_transform_node` converts `/gps/fix` to local-frame `/odometry/gps` for the EKF.
 
 ### BNO085 (BNO080) – 9-DOF IMU
 
