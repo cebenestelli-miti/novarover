@@ -1,6 +1,5 @@
 # ros_gz_bridge: connect mower stack topics to Gazebo Harmonic mower model.
-# ROS /cmd_vel -> Gazebo /model/mower/cmd_vel
-# Gazebo /model/mower/odometry -> ROS /odom/raw
+# Required: cmd_vel, odom/raw. Optional: imu/data, gps/fix (for use_ekf / use_gps).
 
 - ros_topic_name: /cmd_vel
   gz_topic_name: /model/mower/cmd_vel
@@ -12,4 +11,18 @@
   gz_topic_name: /model/mower/odometry
   ros_type_name: nav_msgs/msg/Odometry
   gz_type_name: gz.msgs.Odometry
+  direction: GZ_TO_ROS
+
+# Optional: for bringup with use_ekf:=true
+- ros_topic_name: /imu/data
+  gz_topic_name: /model/mower/imu
+  ros_type_name: sensor_msgs/msg/Imu
+  gz_type_name: gz.msgs.IMU
+  direction: GZ_TO_ROS
+
+# Optional: for bringup with use_ekf:=true use_gps:=true
+- ros_topic_name: /gps/fix
+  gz_topic_name: /model/mower/gps/fix
+  ros_type_name: sensor_msgs/msg/NavSatFix
+  gz_type_name: gz.msgs.NavSat
   direction: GZ_TO_ROS

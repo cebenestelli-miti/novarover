@@ -9,12 +9,15 @@ from ament_index_python.packages import get_package_share_directory
 
 def generate_launch_description():
     pkg_localization = get_package_share_directory('mower_localization')
+    pkg_mission = get_package_share_directory('mower_mission')
+    default_mission = os.path.join(pkg_mission, 'config', 'missions', 'farm_triangle.wgs84')
+    farm_config = os.path.join(pkg_mission, 'config', 'farm_origin.yaml')
     ekf_config = os.path.join(pkg_localization, 'config', 'ekf.yaml')
     ekf_gps_config = os.path.join(pkg_localization, 'config', 'ekf_gps.yaml')
     navsat_config = os.path.join(pkg_localization, 'config', 'navsat_transform.yaml')
 
-    use_ekf = LaunchConfiguration('use_ekf', default='false')
-    use_gps = LaunchConfiguration('use_gps', default='false')
+    use_ekf = LaunchConfiguration('use_ekf')
+    use_gps = LaunchConfiguration('use_gps')
     # Condition: use_ekf and use_gps both true (for EKF+GPS and navsat)
     use_ekf_gps = PythonExpression(["'true' if '", use_ekf, "' == 'true' and '", use_gps, "' == 'true' else 'false'"])
     # Condition: use_ekf true and use_gps false (EKF without GPS)
@@ -33,6 +36,12 @@ def generate_launch_description():
             description='Serial port for real base (e.g. /dev/ttyUSB0). Empty = stub mode (heartbeat + zero odom).'),
         DeclareLaunchArgument('publish_odom', default_value='true',
             description='When use_real_base: if false, real base does not publish /odom/raw (e.g. when Gazebo bridge provides it).'),
+        DeclareLaunchArgument('mission_file', default_value=default_mission,
+            description='Path to .waypoints or .wgs84 mission file. Empty to use waypoints param only.'),
+        DeclareLaunchArgument('farm_config', default_value=farm_config,
+            description='Path to farm_origin.yaml (farm_origin_lat/lon/alt, geofence, GNSS gates).'),
+        DeclareLaunchArgument('mission_frame_id', default_value='map',
+            description='Frame for mission/waypoints (odom or map). Use odom for testing without EKF/GPS.'),
         # Mock base: for development/testing without hardware
         Node(
             package='mower_base',
@@ -56,8 +65,8 @@ def generate_launch_description():
             parameters=[{
                 'publish_rate_hz': 10.0,
                 'publish_ultrasonic': True,
-                'serial_port': LaunchConfiguration('base_serial_port', default_value=''),
-                'publish_odom': LaunchConfiguration('publish_odom', default_value='true'),
+                'serial_port': LaunchConfiguration('base_serial_port'),
+                'publish_odom': LaunchConfiguration('publish_odom'),
             }],
         ),
         Node(
@@ -76,18 +85,28 @@ def generate_launch_description():
             package='mower_mission',
             executable='mission_manager_node',
             name='mission_manager',
+            parameters=[
+                LaunchConfiguration('farm_config'),
+                {
+                    'mission_file': LaunchConfiguration('mission_file'),
+                    'mission_frame_id': LaunchConfiguration('mission_frame_id'),
+                },
+            ],
         ),
         Node(
             package='mower_mission',
             executable='waypoint_follower_node',
             name='waypoint_follower',
-            parameters=[{
-                'waypoint_tolerance_m': 0.4,
-                'max_linear_speed': 0.5,
-                'max_angular_speed': 0.8,
-                # waypoints parameter is left to the node default (empty)
-                # and should be overridden via a YAML params file or CLI.
-            }],
+            parameters=[
+                LaunchConfiguration('farm_config'),
+                {
+                    'waypoint_tolerance_m': 0.4,
+                    'max_linear_speed': 0.5,
+                    'max_angular_speed': 0.8,
+                    'mission_file': LaunchConfiguration('mission_file'),
+                    'mission_frame_id': LaunchConfiguration('mission_frame_id'),
+                },
+            ],
         ),
         # Simple odom forward (no IMU/GPS fusion). Used when use_ekf is false.
         Node(

@@ -23,6 +23,81 @@
         </geometry>
         <material><ambient>0.2 0.5 0.2 1</ambient><diffuse>0.2 0.5 0.2 1</diffuse></material>
       </visual>
+      <!-- Ultrasonic sensors (simulated with range sensor; Harmonic has no dedicated ultrasonic type): 0=front left, 1=front middle, 2=front right, 3=left side, 4=right side, 5=rear. Update poses to match real robot. -->
+      <sensor name="ultrasonic_0" type="gpu_lidar">
+        <pose>0.35 0.15 0.1 0 0 0.785</pose>
+        <topic>/model/mower/ultrasonic/0</topic>
+        <update_rate>20</update_rate>
+        <ray>
+          <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal><vertical><samples>1</samples><resolution>0.01</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical></scan>
+          <range><min>0.02</min><max>4.0</max><resolution>0.01</resolution></range>
+        </ray>
+        <always_on>1</always_on>
+      </sensor>
+      <sensor name="ultrasonic_1" type="gpu_lidar">
+        <pose>0.4 0 0.1 0 0 0</pose>
+        <topic>/model/mower/ultrasonic/1</topic>
+        <update_rate>20</update_rate>
+        <ray>
+          <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal><vertical><samples>1</samples><resolution>0.01</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical></scan>
+          <range><min>0.02</min><max>4.0</max><resolution>0.01</resolution></range>
+        </ray>
+        <always_on>1</always_on>
+      </sensor>
+      <sensor name="ultrasonic_2" type="gpu_lidar">
+        <pose>0.35 -0.15 0.1 0 0 -0.785</pose>
+        <topic>/model/mower/ultrasonic/2</topic>
+        <update_rate>20</update_rate>
+        <ray>
+          <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal><vertical><samples>1</samples><resolution>0.01</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical></scan>
+          <range><min>0.02</min><max>4.0</max><resolution>0.01</resolution></range>
+        </ray>
+        <always_on>1</always_on>
+      </sensor>
+      <sensor name="ultrasonic_3" type="gpu_lidar">
+        <pose>0 0.25 0.1 0 0 1.5708</pose>
+        <topic>/model/mower/ultrasonic/3</topic>
+        <update_rate>20</update_rate>
+        <ray>
+          <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal><vertical><samples>1</samples><resolution>0.01</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical></scan>
+          <range><min>0.02</min><max>4.0</max><resolution>0.01</resolution></range>
+        </ray>
+        <always_on>1</always_on>
+      </sensor>
+      <sensor name="ultrasonic_4" type="gpu_lidar">
+        <pose>0 -0.25 0.1 0 0 -1.5708</pose>
+        <topic>/model/mower/ultrasonic/4</topic>
+        <update_rate>20</update_rate>
+        <ray>
+          <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal><vertical><samples>1</samples><resolution>0.01</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical></scan>
+          <range><min>0.02</min><max>4.0</max><resolution>0.01</resolution></range>
+        </ray>
+        <always_on>1</always_on>
+      </sensor>
+      <sensor name="ultrasonic_5" type="gpu_lidar">
+        <pose>-0.35 0 0.1 0 0 3.14159</pose>
+        <topic>/model/mower/ultrasonic/5</topic>
+        <update_rate>20</update_rate>
+        <ray>
+          <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal><vertical><samples>1</samples><resolution>0.01</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical></scan>
+          <range><min>0.02</min><max>4.0</max><resolution>0.01</resolution></range>
+        </ray>
+        <always_on>1</always_on>
+      </sensor>
+      <!-- IMU (optional: for use_ekf:=true). Frame base_link, REP-103. -->
+      <sensor name="imu_sensor" type="imu">
+        <pose>0 0 0 0 0 0</pose>
+        <topic>/model/mower/imu</topic>
+        <update_rate>100</update_rate>
+        <always_on>1</always_on>
+      </sensor>
+      <!-- GPS (optional: for use_ekf:=true use_gps:=true). World must define spherical_coordinates. -->
+      <sensor name="gps_sensor" type="navsat">
+        <pose>0 0 0 0 0 0</pose>
+        <topic>/model/mower/gps/fix</topic>
+        <update_rate>10</update_rate>
+        <always_on>1</always_on>
+      </sensor>
     </link>
     <link name="left_wheel">
       <pose>0 0.25 0.1 0 0 0</pose>

@@ -1,0 +1,6 @@
+# WGS84 waypoints (lat lon) for farm triangle mission.
+# A simple triangle A-B-C and return to A (origin) in WGS84.
+-28.537105 151.932172   # A
+-28.536673 151.932314   # B
+-28.536875 151.932639   # C
+-28.537105 151.932172   # Return to A

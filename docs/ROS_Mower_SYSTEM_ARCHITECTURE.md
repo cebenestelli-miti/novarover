@@ -63,7 +63,7 @@ Outputs:
 - Filtered odometry/pose
 - TF/frames consistent with navigation
 
-**Implementation (mower_localization):** Default: forward `/odom/raw` → `/odom` + TF. With `use_ekf:=true`, EKF fuses `/odom/raw` and `/imu/data` (BNO085); with `use_ekf:=true use_gps:=true`, `navsat_transform_node` converts `/gps/fix` to `/odometry/gps` and EKF fuses odom + IMU + GPS. Config: `ekf.yaml` (no GPS), `ekf_gps.yaml` and `navsat_transform.yaml` (with GPS). Install: `ros-jazzy-robot-localization`.
+**Implementation (mower_localization):** Default: forward `/odom/raw` → `/odom` + TF. With `use_ekf:=true`, EKF fuses `/odom/raw` and `/imu/data` (BNO085); with `use_ekf:=true use_gps:=true`, `navsat_transform_node` converts `/gps/fix` to `/odometry/gps` and EKF fuses odom + IMU + GPS. Config: `ekf.yaml` (no GPS), `ekf_gps.yaml` and `navsat_transform.yaml` (with GPS). Install: `ros-jazzy-robot-localization`. **Topic /odom may be in map frame when GPS is enabled** (EKF `world_frame: map`); the waypoint follower expects `odom.header.frame_id` to match its `mission_frame_id` (default `"map"`).
 
 ### Mission Manager
 Responsibilities:
@@ -73,13 +73,21 @@ Responsibilities:
 - Execute mission plan:
   - Convert mission to a stream of goals or waypoints
   - Pause/abort on safety state changes
+  - Use obstacle **hazard levels** from the ultrasonic guard to bias path
+    following and perform local go‑around maneuvers before a hard STOP is
+    asserted (while always respecting `/safety/stop` when it is true).
 
 ### Ultrasonic Guard
 Responsibilities:
 - Convert raw 6-range array into:
-  - Hazard level
-  - Stop request
+  - Hazard level (CLEAR / CAUTION / BLOCKED)
+  - Stop request (for BLOCKED / STOP zone)
 - Direction-aware logic recommended (e.g., rear sensor only blocks reverse motion)
+The ultrasonic guard provides **hazard levels** that allow the mission layer
+to perform **go-around behavior** instead of only stopping when an obstacle
+is detected. The safety supervisor still treats `/obstacles/stop_request` as
+the authoritative stop input; hazard levels are for higher-level planning
+(e.g., local detours around obstacles within the mission area).
 
 ### Safety Supervisor (Single Source of Truth for STOP)
 Responsibilities:

@@ -2,18 +2,19 @@
 # Subscribes: odometry (from EKF, remap to /odom), /imu/data, /gps/fix.
 # Publishes: /odometry/gps (nav_msgs/Odometry in local frame).
 # Used when use_ekf:=true and use_gps:=true (NEO-M9N).
+# For farm-fixed map: set datum to match mower_mission farm_origin (lat/lon). If this node does not
+# support a fixed datum param, drive to farm origin and power on so first fix = datum, or use a node
+# that publishes a static transform from map to odom at farm origin.
 
 navsat_transform_node:
   ros__parameters:
     frequency: 30.0
     delay: 3.0
-    # 10.52° E (≈0.1835 rad) as of 2025-03-02; drifts ~0.07° W/year — update periodically. See https://www.ngdc.noaa.gov/geomag/
     magnetic_declination_radians: 0.1835
-    # IMU yaw offset so 0 = east (ENU). If IMU reports 0 when facing north, use 1.5708 (pi/2).
     yaw_offset: 0.0
     zero_altitude: true
     broadcast_utm_transform: false
     publish_filtered_gps: false
     use_odometry_yaw: false
-    # Use first GPS fix as local-frame origin when false.
+    # false = use first GPS fix as origin. For farm-fixed map, match origin to farm_origin (see farm_origin.yaml).
     wait_for_datum: false

@@ -33,6 +33,7 @@ Do not invent new topic names, reorder arrays, or bypass safety authority.
 
 ### Odometry / Sensors
 - /odom/raw : nav_msgs/msg/Odometry
+- /odom : nav_msgs/msg/Odometry — consumed by waypoint follower and mission (geofence). **Topic /odom may be in map frame when GPS is enabled.** Localization (or EKF with `world_frame: map`) sets `header.frame_id` to the mission frame (e.g. `"map"`); the waypoint follower only uses odom when `header.frame_id` matches its `mission_frame_id` param (default `"map"`).
 - /imu/data : sensor_msgs/msg/Imu
 - /gps/fix : sensor_msgs/msg/NavSatFix
 
@@ -142,18 +143,38 @@ Input:
 
 Outputs:
 - /obstacles/stop_request : std_msgs/msg/Bool
-- /obstacles/hazard_level : std_msgs/msg/UInt8 (optional)
+- /obstacles/hazard_level : std_msgs/msg/UInt8
 
 Rules (v1 defaults):
 - If any range_m[i] < STOP_DIST_M -> stop_request TRUE
 - Recommend direction-aware gating:
   - rear sensor only blocks reverse motion (optional in v1 if velocity is available)
+Implementation for obstacle go-around:
+- Use `hazard_level` to represent graded states such as:
+  - 0 = CLEAR (all ranges >= CAUTION_DIST_M)
+  - 1 = CAUTION (at least one range in [STOP_DIST_M, CAUTION_DIST_M), none < STOP_DIST_M)
+  - 2 = BLOCKED (at least one range < STOP_DIST_M)
+- SafetySupervisor continues to use only `/obstacles/stop_request` to assert STOP;
+  hazard levels are for higher-level behaviors (e.g., local go-around
+  maneuvers in the mission/waypoint follower logic that detour around obstacles
+  while remaining within the mission area / outside keep-out zones).
+
+Suggested waypoint follower behavior using hazard_level and the 6 ultrasonics:
+- When `hazard_level == CLEAR`: follow the nominal waypoint trajectory.
+- When `hazard_level == CAUTION` (front sensors close but not in STOP zone):
+  - Reduce forward speed.
+  - Bias `cmd_vel.angular.z` away from the closer front obstacle: if front_center
+    is near and front_right is clearer than front_left, turn right (and vice versa).
+  - Use side sensors to avoid scraping along obstacles while going around.
+- When `hazard_level == BLOCKED` or `/safety/stop` is TRUE: publish zero `cmd_vel`
+  and wait for the guard/safety to clear the stop.
 
 ---
 
 ## 6) Parameters (defaults for v1)
 
 STOP_DIST_M: 0.60
+CAUTION_DIST_M: 1.00
 GPS_LOSS_SEC: 2.0
 GPS_MAX_AGE_SEC: 1.0
 HDOP_MAX: 2.5
@@ -200,3 +221,17 @@ With `publish_ultrasonic:=false`, the mock still publishes heartbeat and odom fo
 - **Dependency:** `ros-jazzy-robot_localization`. `mower_base` has `exec_depend` on `robot_localization`.
 - **Sensors:** **BNO085** → `/imu/data` (Imu, frame `base_link`, REP-103). **NEO-M9N** → `/gps/fix` (NavSatFix), `/gps/status` (GpsStatus for safety).
 - **Usage:** Default: no fusion. IMU: `use_ekf:=true`. IMU+GPS: `use_ekf:=true use_gps:=true`.
+- **Farm-fixed map:** With GPS, EKF uses `world_frame: map`. Waypoints and robot pose are in the same frame (map). NavSat datum should match `farm_origin` (see below) so /odom is in map.
+
+---
+
+## 10) Mission storage, formats, and startup gates
+
+- **.waypoints (backward compatible):** One "x y" (meters) per line. Comments with #. No conversion. **.waypoints are in mission_frame_id** (e.g. "odom" or "map"); when using farm config that is "map".
+- **.wgs84 (phone logger):** Optional first line `# origin: lat lon`. Then one "lat lon" per line. Converted to ENU meters at load using `farm_origin_*` (or file origin if present); result is in the same frame as mission (map when using farm origin). Extension `.wgs84` selects this format.
+- **Farm-fixed origin:** Params `farm_origin_lat`, `farm_origin_lon`, (optional) `farm_origin_alt`. In bringup/config (e.g. `farm_origin.yaml`). Used when loading .wgs84 so waypoints are in the same map frame as localization.
+- **Mission frame:** Waypoint follower and mission manager use waypoints in mission_frame_id (e.g. "map" with farm config). Localization must publish /odom with that frame_id so pose and waypoints are aligned.
+- **Waypoint loader + follower aligned:** .waypoints files are implicitly in **mission_frame_id** (when using farm config, that is "map"). .wgs84 is converted to ENU in that same frame at load. The follower only uses /odom when `header.frame_id == mission_frame_id`, so waypoints and pose are always in the same frame.
+- **Startup gates (before mission/start succeeds):**  
+  - **GNSS quality gate:** If `require_gnss_quality` is true, refuse start unless /gps/status has fix_ok and fix_type >= min_fix_type (e.g. 2 = 3D).  
+  - **Geofence gate (optional):** Geofence polygon is defined in **mission_frame_id** (map frame when using farm config). The pose used for the check **must** be from an /odom message where `header.frame_id == mission_frame_id`; otherwise you can get false fails or (worse) false passes. Mission manager refuses start if frame_id does not match before evaluating inside/outside.

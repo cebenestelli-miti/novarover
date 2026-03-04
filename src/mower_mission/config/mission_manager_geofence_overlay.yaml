@@ -1,0 +1,6 @@
+# Loaded after farm_origin so mission_manager always has geofence params set
+# (avoids overlay from launch dropping them). In production, set geofence in farm_origin or here.
+mission_manager:
+  ros__parameters:
+    geofence_enabled: false
+    geofence_polygon: []

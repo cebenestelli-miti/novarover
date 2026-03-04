@@ -124,6 +124,7 @@ With `publish_ultrasonic:=false`, the mock still publishes heartbeat and odom fo
 - **Without IMU (default):** `ros2 launch mower_base bringup.launch.py` — simple node forwards `/odom/raw` → `/odom` + TF.
 - **With BNO085 (IMU):** `ros2 launch mower_base bringup.launch.py use_ekf:=true` — EKF fuses `/odom/raw` and `/imu/data`; config in `mower_localization/config/ekf.yaml`; planar mode; install `ros-jazzy-robot-localization`.
 - **With BNO085 + NEO-M9N (GPS):** `ros2 launch mower_base bringup.launch.py use_ekf:=true use_gps:=true` — EKF fuses `/odom/raw`, `/imu/data`, and `/odometry/gps`; `navsat_transform_node` converts `/gps/fix` → `/odometry/gps`. Config: `ekf_gps.yaml`, `navsat_transform.yaml`; set `magnetic_declination_radians` for your location.
+- **Topic /odom may be in map frame when GPS is enabled.** The EKF is configured with `world_frame: map`, so `/odom` has `header.frame_id == "map"`. The waypoint follower only uses odom when the frame matches its `mission_frame_id` param (default `"map"`).
 - **Expected topics:** BNO085 → `/imu/data` (Imu, frame `base_link`, REP-103). NEO-M9N → `/gps/fix` (NavSatFix), `/gps/status` (GpsStatus for safety).
 
 ---

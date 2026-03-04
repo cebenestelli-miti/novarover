@@ -12,5 +12,7 @@ install(DIRECTORY launch config models worlds
   DESTINATION share/${PROJECT_NAME}
   USE_SOURCE_PERMISSIONS
 )
+install(PROGRAMS scripts/sim_helpers_node.py
+  DESTINATION lib/${PROJECT_NAME})
 
 ament_package()

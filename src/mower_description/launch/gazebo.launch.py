@@ -1,18 +1,20 @@
 import os
 from launch import LaunchDescription
-from launch.actions import AppendEnvironmentVariable, DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.actions import AppendEnvironmentVariable, DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_share_directory, get_package_prefix
 
 
 def generate_launch_description():
     pkg_mower = get_package_share_directory('mower_description')
+    pkg_prefix = get_package_prefix('mower_description')
     pkg_gz_sim = get_package_share_directory('ros_gz_sim')
     world_path = os.path.join(pkg_mower, 'worlds', 'mower_empty.sdf')
     bridge_config = os.path.join(pkg_mower, 'config', 'bridge.yaml')
     resource_path = os.path.dirname(pkg_mower)
+    sim_helpers_script = os.path.join(pkg_prefix, 'lib', 'mower_description', 'sim_helpers_node.py')
 
     return LaunchDescription([
         DeclareLaunchArgument('world', default_value=world_path, description='Full path to world SDF file'),
@@ -32,6 +34,12 @@ def generate_launch_description():
                     executable='parameter_bridge',
                     name='ros_gz_bridge',
                     arguments=['--ros-args', '-p', 'config_file:=' + bridge_config],
+                    output='screen',
+                ),
+                # Sim topic contract: /base/heartbeat (10 Hz), /mower/stall (1 Hz, false)
+                ExecuteProcess(
+                    cmd=['python3', sim_helpers_script],
+                    name='sim_helpers_node',
                     output='screen',
                 ),
             ],

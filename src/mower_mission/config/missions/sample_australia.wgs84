@@ -1,0 +1,6 @@
+# origin: -27.123456 152.123456
+# WGS84 waypoints (lat lon), one per line. Converted to ENU meters at load using farm_origin or file origin.
+-27.123460 152.123470
+-27.123480 152.123500
+-27.123500 152.123480
+-27.123480 152.123460

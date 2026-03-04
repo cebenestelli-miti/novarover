@@ -1,0 +1,40 @@
+# Farm-fixed origin for WGS84 missions and map frame.
+# When using .wgs84 missions, waypoints are converted to ENU meters relative to this origin.
+# Localization (navsat + EKF) should use the same origin as datum so /odom is in map frame.
+# Example Australia (replace with your farm):
+#   farm_origin_lat: -27.123456
+#   farm_origin_lon: 152.123456
+
+# Node names must match launch (mission_manager, waypoint_follower).
+mission_manager:
+  ros__parameters:
+    # Farm origin and permanent geofence (origin at P1).
+    # New farm-wide boundary (WGS84):
+    #   P1: (-28.535688, 151.929198)
+    #   P2: (-28.536518, 151.933930)
+    #   P3: (-28.538019, 151.935351)
+    #   P4: (-28.539432, 151.935010)
+    #   P5: (-28.537692, 151.929252)
+    farm_origin_lat: -28.535688
+    farm_origin_lon: 151.929198
+    farm_origin_alt: 0.0
+    mission_frame_id: "map"
+    require_gnss_quality: false
+    min_fix_type: 2
+    geofence_enabled: true
+    # Geofence polygon in ENU meters (east, north) relative to farm_origin (P1).
+    # Approximate ENU coordinates (meters):
+    #   P1 -> (0.0,    0.0)
+    #   P2 -> (463.6, -92.4)
+    #   P3 -> (602.0, -259.2)
+    #   P4 -> (568.5, -416.4)
+    #   P5 -> (5.3,   -223.9)
+    geofence_polygon: [0.0, 0.0, 463.6, -92.4, 602.0, -259.2, 568.5, -416.4, 5.3, -223.9]
+
+waypoint_follower:
+  ros__parameters:
+    farm_origin_lat: -28.535688
+    farm_origin_lon: 151.929198
+    farm_origin_alt: 0.0
+    # Frame of /odom and waypoints; must match localization output (e.g. "map" when GPS enabled).
+    mission_frame_id: "map"
