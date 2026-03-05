@@ -108,12 +108,36 @@
         </inertia>
       </inertial>
       <collision name="left_wheel_collision">
-        <geometry><cylinder><radius>0.1</radius><length>0.05</length></cylinder></geometry>
-        <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
+        <!-- Rotate cylinder so its axis aligns with the joint (y-axis) -->
+        <pose>0 0 0 1.5708 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.1</radius>
+            <length>0.05</length>
+          </cylinder>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
       </collision>
       <visual name="left_wheel_visual">
-        <geometry><cylinder><radius>0.1</radius><length>0.05</length></cylinder></geometry>
-        <material><ambient>0.1 0.1 0.1 1</ambient><diffuse>0.2 0.2 0.2 1</diffuse></material>
+        <!-- Match visual orientation to collision (wheel lying vertical, rolling around y) -->
+        <pose>0 0 0 1.5708 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.1</radius>
+            <length>0.05</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.1 0.1 0.1 1</ambient>
+          <diffuse>0.2 0.2 0.2 1</diffuse>
+        </material>
       </visual>
     </link>
     <joint name="left_wheel_joint" type="revolute">
@@ -134,12 +158,36 @@
         </inertia>
       </inertial>
       <collision name="right_wheel_collision">
-        <geometry><cylinder><radius>0.1</radius><length>0.05</length></cylinder></geometry>
-        <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
+        <!-- Rotate cylinder so its axis aligns with the joint (y-axis) -->
+        <pose>0 0 0 1.5708 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.1</radius>
+            <length>0.05</length>
+          </cylinder>
+        </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>1.0</mu>
+              <mu2>1.0</mu2>
+            </ode>
+          </friction>
+        </surface>
       </collision>
       <visual name="right_wheel_visual">
-        <geometry><cylinder><radius>0.1</radius><length>0.05</length></cylinder></geometry>
-        <material><ambient>0.1 0.1 0.1 1</ambient><diffuse>0.2 0.2 0.2 1</diffuse></material>
+        <!-- Match visual orientation to collision (wheel lying vertical, rolling around y) -->
+        <pose>0 0 0 1.5708 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.1</radius>
+            <length>0.05</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.1 0.1 0.1 1</ambient>
+          <diffuse>0.2 0.2 0.2 1</diffuse>
+        </material>
       </visual>
     </link>
     <joint name="right_wheel_joint" type="revolute">

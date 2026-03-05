@@ -1,7 +1,7 @@
 # ros_gz_bridge: connect mower stack topics to Gazebo Harmonic mower model.
 # Required: cmd_vel, odom/raw. Optional: imu/data, gps/fix (for use_ekf / use_gps).
 
-- ros_topic_name: /cmd_vel
+- ros_topic_name: /cmd_vel_gz
   gz_topic_name: /model/mower/cmd_vel
   ros_type_name: geometry_msgs/msg/Twist
   gz_type_name: gz.msgs.Twist
@@ -25,4 +25,41 @@
   gz_topic_name: /model/mower/gps/fix
   ros_type_name: sensor_msgs/msg/NavSatFix
   gz_type_name: gz.msgs.NavSat
+  direction: GZ_TO_ROS
+
+# Optional: bridge 6 simulated ultrasonic scans (gpu_lidar -> LaserScan) into ROS.
+- ros_topic_name: /ultrasonic/scan0
+  gz_topic_name: /model/mower/ultrasonic/0
+  ros_type_name: sensor_msgs/msg/LaserScan
+  gz_type_name: gz.msgs.LaserScan
+  direction: GZ_TO_ROS
+
+- ros_topic_name: /ultrasonic/scan1
+  gz_topic_name: /model/mower/ultrasonic/1
+  ros_type_name: sensor_msgs/msg/LaserScan
+  gz_type_name: gz.msgs.LaserScan
+  direction: GZ_TO_ROS
+
+- ros_topic_name: /ultrasonic/scan2
+  gz_topic_name: /model/mower/ultrasonic/2
+  ros_type_name: sensor_msgs/msg/LaserScan
+  gz_type_name: gz.msgs.LaserScan
+  direction: GZ_TO_ROS
+
+- ros_topic_name: /ultrasonic/scan3
+  gz_topic_name: /model/mower/ultrasonic/3
+  ros_type_name: sensor_msgs/msg/LaserScan
+  gz_type_name: gz.msgs.LaserScan
+  direction: GZ_TO_ROS
+
+- ros_topic_name: /ultrasonic/scan4
+  gz_topic_name: /model/mower/ultrasonic/4
+  ros_type_name: sensor_msgs/msg/LaserScan
+  gz_type_name: gz.msgs.LaserScan
+  direction: GZ_TO_ROS
+
+- ros_topic_name: /ultrasonic/scan5
+  gz_topic_name: /model/mower/ultrasonic/5
+  ros_type_name: sensor_msgs/msg/LaserScan
+  gz_type_name: gz.msgs.LaserScan
   direction: GZ_TO_ROS
