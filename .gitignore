@@ -15,6 +15,7 @@ __pycache__/
 
 # IDE / editor
 .idea/
+.cursor/
 *.swp
 *.swo
 *~

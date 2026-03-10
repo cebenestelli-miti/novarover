@@ -1,0 +1,23 @@
+# Sim-only config: odom frame, no geofence. Use with mission_file pointing to a .waypoints (x y meters) file.
+mission_manager:
+  ros__parameters:
+    farm_origin_lat: 0.0
+    farm_origin_lon: 0.0
+    farm_origin_alt: 0.0
+    mission_frame_id: "odom"
+    require_gnss_quality: false
+    min_fix_type: 2
+    geofence_enabled: false
+    # Empty polygon not always passed; use minimal 3 points (ignored when geofence_enabled is false).
+    geofence_polygon: [0.0, 0.0, 1.0, 0.0, 1.0, 1.0]
+
+waypoint_follower:
+  ros__parameters:
+    farm_origin_lat: 0.0
+    farm_origin_lon: 0.0
+    farm_origin_alt: 0.0
+    mission_frame_id: "odom"
+    blocked_turn_angular_rad_s: 0.5
+    blocked_skip_timeout_sec: 15.0
+    caution_stuck_timeout_sec: 30.0
+    caution_stuck_min_fraction: 0.02

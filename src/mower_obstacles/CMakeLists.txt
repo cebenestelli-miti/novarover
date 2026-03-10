@@ -8,10 +8,11 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(mower_msgs REQUIRED)
 
 add_executable(ultrasonic_guard_node src/ultrasonic_guard_node.cpp)
-ament_target_dependencies(ultrasonic_guard_node rclcpp std_msgs mower_msgs)
+ament_target_dependencies(ultrasonic_guard_node rclcpp std_msgs geometry_msgs mower_msgs)
 
 install(TARGETS ultrasonic_guard_node
   DESTINATION lib/${PROJECT_NAME})

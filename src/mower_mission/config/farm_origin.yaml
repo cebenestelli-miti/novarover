@@ -36,5 +36,13 @@ waypoint_follower:
     farm_origin_lat: -28.535688
     farm_origin_lon: 151.929198
     farm_origin_alt: 0.0
-    # Frame of /odom and waypoints; must match localization output (e.g. "map" when GPS enabled).
     mission_frame_id: "map"
+    # When BLOCKED: turn in place at this rate (rad/s) to try to clear forward sensors; 0 = no turn.
+    blocked_turn_angular_rad_s: 0.5
+    # After this many seconds blocked, skip current waypoint and go to next. 0 = never skip.
+    blocked_skip_timeout_sec: 15.0
+    # When in CAUTION: after this many seconds, skip waypoint only if we closed less than
+    # caution_stuck_min_fraction of the distance we had when we entered CAUTION. 0 = disabled.
+    caution_stuck_timeout_sec: 30.0
+    # Min fraction of distance (to waypoint) that must be closed in the timeout window to not skip (e.g. 0.02 = 2%).
+    caution_stuck_min_fraction: 0.02

@@ -16,6 +16,6 @@ def generate_launch_description():
             package='mower_obstacles',
             executable='ultrasonic_guard_node',
             name='ultrasonic_guard',
-            parameters=[{'stop_dist_m': 0.60}],
+            parameters=[{'stop_dist_m': 0.40, 'blocked_dist_m': 0.60}],
         ),
     ])

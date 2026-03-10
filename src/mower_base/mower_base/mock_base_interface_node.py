@@ -15,12 +15,16 @@ class MockBaseInterfaceNode(Node):
         self.declare_parameter('ultrasonic_clear_range_m', 2.0)
         self.declare_parameter('ultrasonic_min_range_m', 0.02)
         self.declare_parameter('ultrasonic_max_range_m', 4.0)
+        self.declare_parameter('simulate_obstacle_range_m', -1.0,
+            description='If > 0, publish this range (m) for front sensors 0,1,2 to simulate obstacle (for testing go-around). -1 = off.')
         self.declare_parameter('odom_frame_id', 'odom')
         self.declare_parameter('base_frame_id', 'base_link')
         self.declare_parameter('publish_ultrasonic', True)
 
         self.publish_rate_hz = self.get_parameter('publish_rate_hz').value
         self.ultrasonic_clear = self.get_parameter('ultrasonic_clear_range_m').value
+        v = self.get_parameter('simulate_obstacle_range_m').value
+        self.simulate_obstacle_range_m = float(v) if isinstance(v, str) else v
         self.ultrasonic_min = self.get_parameter('ultrasonic_min_range_m').value
         self.ultrasonic_max = self.get_parameter('ultrasonic_max_range_m').value
         self.odom_frame_id = self.get_parameter('odom_frame_id').value
@@ -89,9 +93,11 @@ class MockBaseInterfaceNode(Node):
         odom.twist.twist.angular.z = vz
         self.odom_pub.publish(odom)
 
-        # Ultrasonic: clear distances (only if publish_ultrasonic)
+        # Ultrasonic: clear distances, or simulated obstacle on front sensors (for go-around testing)
         if self.publish_ultrasonic and self.ultrasonic_pub is not None:
             ranges = [float(self.ultrasonic_clear)] * 6
+            if self.simulate_obstacle_range_m > 0.0:
+                ranges[0] = ranges[1] = ranges[2] = float(self.simulate_obstacle_range_m)
             ua = UltrasonicArray()
             ua.header.stamp = now
             ua.header.frame_id = self.base_frame_id

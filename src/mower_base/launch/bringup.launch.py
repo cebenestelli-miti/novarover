@@ -41,7 +41,9 @@ def generate_launch_description():
         DeclareLaunchArgument('farm_config', default_value=farm_config,
             description='Path to farm_origin.yaml (farm_origin_lat/lon/alt, geofence, GNSS gates).'),
         DeclareLaunchArgument('mission_frame_id', default_value='map',
-            description='Frame for mission/waypoints (odom or map). Use odom for testing without EKF/GPS.'),
+            description='Frame for mission/waypoints (odom or map). Use odom for Gazebo sim.'),
+        DeclareLaunchArgument('simulate_obstacle_range_m', default_value='-1.0',
+            description='Mock only: if > 0, front ultrasonics report this range (m) to test go-around (blocked-skip). -1 = off.'),
         # Mock base: for development/testing without hardware
         Node(
             package='mower_base',
@@ -53,6 +55,7 @@ def generate_launch_description():
                 'ultrasonic_clear_range_m': 2.0,
                 'ultrasonic_min_range_m': 0.02,
                 'ultrasonic_max_range_m': 4.0,
+                'simulate_obstacle_range_m': LaunchConfiguration('simulate_obstacle_range_m'),
                 'publish_ultrasonic': LaunchConfiguration('publish_ultrasonic'),
             }],
         ),
@@ -64,7 +67,7 @@ def generate_launch_description():
             condition=IfCondition(EqualsSubstitution(LaunchConfiguration('use_real_base'), 'true')),
             parameters=[{
                 'publish_rate_hz': 10.0,
-                'publish_ultrasonic': True,
+                'publish_ultrasonic': LaunchConfiguration('publish_ultrasonic'),
                 'serial_port': LaunchConfiguration('base_serial_port'),
                 'publish_odom': LaunchConfiguration('publish_odom'),
             }],
@@ -79,7 +82,7 @@ def generate_launch_description():
             package='mower_obstacles',
             executable='ultrasonic_guard_node',
             name='ultrasonic_guard',
-            parameters=[{'stop_dist_m': 0.60}],
+            parameters=[{'stop_dist_m': 0.40, 'blocked_dist_m': 0.60}],
         ),
         Node(
             package='mower_mission',

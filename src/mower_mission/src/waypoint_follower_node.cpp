@@ -9,6 +9,7 @@
 
 #include <mower_mission/mission_loader.hpp>
 
+#include <chrono>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -34,6 +35,9 @@ public:
     mission_running_(false),
     current_waypoint_index_(0),
     waypoints_loaded_(false),
+    blocked_since_(0),
+    caution_since_(0),
+    caution_dist_start_(0.0),
     complete_sent_(false),
     safety_stop_(false),
     hazard_level_(HAZARD_CLEAR)
@@ -50,6 +54,10 @@ public:
     declare_parameter("caution_linear_scale", 0.4);
     declare_parameter("caution_angular_bias_gain", 0.8);
     declare_parameter("caution_side_bias_gain", 0.3);
+    declare_parameter("blocked_skip_timeout_sec", 15.0);
+    declare_parameter("blocked_turn_angular_rad_s", 0.5);
+    declare_parameter("caution_stuck_timeout_sec", 30.0);
+    declare_parameter("caution_stuck_min_fraction", 0.02);
 
     waypoint_tolerance_ = get_parameter("waypoint_tolerance_m").as_double();
     max_linear_speed_ = get_parameter("max_linear_speed").as_double();
@@ -57,6 +65,10 @@ public:
     caution_linear_scale_ = get_parameter("caution_linear_scale").as_double();
     caution_angular_bias_gain_ = get_parameter("caution_angular_bias_gain").as_double();
     caution_side_bias_gain_ = get_parameter("caution_side_bias_gain").as_double();
+    blocked_skip_timeout_sec_ = get_parameter("blocked_skip_timeout_sec").as_double();
+    blocked_turn_angular_rad_s_ = get_parameter("blocked_turn_angular_rad_s").as_double();
+    caution_stuck_timeout_sec_ = get_parameter("caution_stuck_timeout_sec").as_double();
+    caution_stuck_min_fraction_ = get_parameter("caution_stuck_min_fraction").as_double();
     mission_frame_id_ = get_parameter("mission_frame_id").as_string();
     loadWaypoints();
 
@@ -114,6 +126,7 @@ private:
     if (!mission_running_) {
       current_waypoint_index_ = 0;
       complete_sent_ = false;
+      blocked_since_ = rclcpp::Time(0);
     }
   }
 
@@ -187,9 +200,46 @@ private:
     }
 
     if (safety_stop_ || hazard_level_ == HAZARD_BLOCKED) {
+      const size_t idx = current_waypoint_index_;
+      const bool have_current = (waypoints_.size() >= 2u && idx * 2u + 1u < waypoints_.size());
+      if (have_current && blocked_skip_timeout_sec_ > 0.0) {
+        const auto now = get_clock()->now();
+        if (blocked_since_.nanoseconds() == 0)
+          blocked_since_ = now;
+        const double elapsed = (now - blocked_since_).seconds();
+        if (elapsed >= blocked_skip_timeout_sec_) {
+          RCLCPP_WARN(get_logger(), "Blocked %.1f s at waypoint %zu; skipping to next (go-around)",
+            elapsed, idx);
+          current_waypoint_index_++;
+          blocked_since_ = rclcpp::Time(0);
+          if (current_waypoint_index_ * 2u + 1u >= waypoints_.size() && !complete_sent_) {
+            RCLCPP_INFO(get_logger(), "All waypoints done (with skips); calling mission/complete");
+            complete_sent_ = true;
+            requestComplete();
+          }
+        }
+      }
+      // When BLOCKED and not safety_stop_: turn in place toward the clearer side (use side ultrasonics).
+      if (!safety_stop_ && hazard_level_ == HAZARD_BLOCKED && blocked_turn_angular_rad_s_ > 0.0) {
+        double turn = blocked_turn_angular_rad_s_;
+        if (last_ultrasonic_ && last_ultrasonic_->range_m.size() >= 5u) {
+          const float min_m = last_ultrasonic_->min_range_m;
+          const float max_m = last_ultrasonic_->max_range_m;
+          const float left_r = last_ultrasonic_->range_m[3];
+          const float right_r = last_ultrasonic_->range_m[4];
+          const bool left_ok = std::isfinite(left_r) && left_r >= min_m && left_r <= max_m;
+          const bool right_ok = std::isfinite(right_r) && right_r >= min_m && right_r <= max_m;
+          if (left_ok && right_ok) {
+            if (right_r > left_r) turn = std::min(blocked_turn_angular_rad_s_, max_angular_speed_);
+            else if (left_r > right_r) turn = -std::min(blocked_turn_angular_rad_s_, max_angular_speed_);
+          }
+        }
+        cmd.angular.z = turn;
+      }
       cmd_vel_pub_->publish(cmd);
       return;
     }
+    blocked_since_ = rclcpp::Time(0);
 
     if (waypoints_.size() < 2u) {
       cmd_vel_pub_->publish(cmd);
@@ -215,6 +265,7 @@ private:
 
     if (dist < waypoint_tolerance_) {
       current_waypoint_index_++;
+      caution_since_ = rclcpp::Time(0);
       if (current_waypoint_index_ * 2u + 1u >= waypoints_.size() && !complete_sent_) {
         RCLCPP_INFO(get_logger(), "All waypoints reached; calling mission/complete");
         complete_sent_ = true;
@@ -222,6 +273,39 @@ private:
       }
       cmd_vel_pub_->publish(cmd);
       return;
+    }
+
+    if (hazard_level_ != HAZARD_CAUTION) {
+      caution_since_ = rclcpp::Time(0);
+    } else if (caution_stuck_timeout_sec_ > 0.0 && caution_stuck_min_fraction_ >= 0.0) {
+      const auto now = get_clock()->now();
+      if (caution_since_.nanoseconds() == 0) {
+        caution_since_ = now;
+        caution_dist_start_ = dist;
+      } else {
+        const double elapsed = (now - caution_since_).seconds();
+        if (elapsed >= caution_stuck_timeout_sec_ && caution_dist_start_ >= 1e-6) {
+          const double closed = caution_dist_start_ - dist;
+          const double progress = closed / caution_dist_start_;
+          if (progress >= caution_stuck_min_fraction_) {
+            caution_since_ = now;
+            caution_dist_start_ = dist;
+          } else {
+            RCLCPP_WARN(get_logger(),
+              "Caution stuck at waypoint %zu (%.1f s, progress %.1f%% < %.1f%%); skipping",
+              idx, elapsed, progress * 100.0, caution_stuck_min_fraction_ * 100.0);
+            current_waypoint_index_++;
+            caution_since_ = rclcpp::Time(0);
+            if (current_waypoint_index_ * 2u + 1u >= waypoints_.size() && !complete_sent_) {
+              RCLCPP_INFO(get_logger(), "All waypoints done (with caution skips); calling mission/complete");
+              complete_sent_ = true;
+              requestComplete();
+            }
+            cmd_vel_pub_->publish(cmd);
+            return;
+          }
+        }
+      }
     }
 
     const double goal_yaw = std::atan2(dy, dx);
@@ -285,7 +369,14 @@ private:
   double caution_linear_scale_;
   double caution_angular_bias_gain_;
   double caution_side_bias_gain_;
+  double blocked_skip_timeout_sec_;
+  double blocked_turn_angular_rad_s_;
+  double caution_stuck_timeout_sec_;
+  double caution_stuck_min_fraction_;
   std::string mission_frame_id_;
+  rclcpp::Time blocked_since_;
+  rclcpp::Time caution_since_;
+  double caution_dist_start_;
   nav_msgs::msg::Odometry::SharedPtr last_odom_;
   mower_msgs::msg::UltrasonicArray::SharedPtr last_ultrasonic_;
   bool complete_sent_;

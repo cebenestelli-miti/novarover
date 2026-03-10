@@ -90,7 +90,9 @@ private:
   {
     safety_stop_asserted_ = msg->stop_asserted;
     if (msg->stop_asserted) {
-      if (mission_state_ == MISSION_RUNNING || mission_state_ == MISSION_ARMED) {
+      // Only pause when already RUNNING. When ARMED, leave state so start can be called;
+      // on_start will defer to PAUSED if safety still asserted.
+      if (mission_state_ == MISSION_RUNNING) {
         RCLCPP_INFO(get_logger(), "Mission PAUSED (safety: %s)", msg->reason.c_str());
         mission_state_ = MISSION_PAUSED;
         mission_reason_ = "safety: " + msg->reason;
