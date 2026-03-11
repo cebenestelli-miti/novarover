@@ -116,9 +116,13 @@ std::vector<double> load_mission(const std::string& path,
                                  double farm_origin_alt)
 {
   if (path.empty()) return {};
-  if (isWgs84Extension(path))
-    return loadWgs84AndConvert(path, farm_origin_lat, farm_origin_lon, farm_origin_alt);
-  return loadWaypointsMeters(path);
+  // Ignore editor backup suffix so e.g. mission_file ending in .waypoints~ loads .waypoints
+  std::string path_to_use = path;
+  if (path_to_use.size() > 1u && path_to_use.back() == '~') path_to_use.pop_back();
+  if (path_to_use.empty()) return {};
+  if (isWgs84Extension(path_to_use))
+    return loadWgs84AndConvert(path_to_use, farm_origin_lat, farm_origin_lon, farm_origin_alt);
+  return loadWaypointsMeters(path_to_use);
 }
 
 }  // namespace mower_mission

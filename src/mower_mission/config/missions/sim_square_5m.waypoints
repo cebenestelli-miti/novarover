@@ -1,0 +1,6 @@
+# 5 m square mission in odom frame (meters).
+# Start at (0,0), traverse 5 m square CCW, return home.
+5.0 0.0
+5.0 5.0
+0.0 5.0
+0.0 0.0

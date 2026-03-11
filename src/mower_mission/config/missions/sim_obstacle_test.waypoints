@@ -1,7 +1,7 @@
-# Sim obstacle test: x y (meters in odom frame). Robot starts at 0,0; path goes forward toward obstacle then right.
-# Obstacle in world is at ~3 0; robot should slow (caution) then stop (blocked) or steer.
+# Sim obstacle test: x y (metres, odom frame). Robot starts at (0,0) heading east.
+# Obstacle box at (5, 0). WP1 is at (8,0) to clearly validate pass-by behavior in sim.
 2 0
-6 0
-6 2
+8 0
+8 2
 2 2
 2 0

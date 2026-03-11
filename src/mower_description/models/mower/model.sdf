@@ -28,61 +28,67 @@
         <pose>0.35 0.15 0.1 0 0 0.785</pose>
         <topic>/model/mower/ultrasonic/0</topic>
         <update_rate>20</update_rate>
-        <ray>
-          <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal><vertical><samples>1</samples><resolution>0.01</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical></scan>
-          <range><min>0.02</min><max>4.0</max><resolution>0.01</resolution></range>
-        </ray>
+        <lidar>
+          <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.175</min_angle><max_angle>0.175</max_angle></horizontal></scan>
+          <range><min>0.25</min><max>4.0</max><resolution>0.01</resolution></range>
+        </lidar>
         <always_on>1</always_on>
+        <visualize>true</visualize>
       </sensor>
       <sensor name="ultrasonic_1" type="gpu_lidar">
         <pose>0.4 0 0.1 0 0 0</pose>
         <topic>/model/mower/ultrasonic/1</topic>
         <update_rate>20</update_rate>
-        <ray>
-          <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal><vertical><samples>1</samples><resolution>0.01</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical></scan>
-          <range><min>0.02</min><max>4.0</max><resolution>0.01</resolution></range>
-        </ray>
+        <lidar>
+          <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.175</min_angle><max_angle>0.175</max_angle></horizontal></scan>
+          <range><min>0.25</min><max>4.0</max><resolution>0.01</resolution></range>
+        </lidar>
         <always_on>1</always_on>
+        <visualize>true</visualize>
       </sensor>
       <sensor name="ultrasonic_2" type="gpu_lidar">
         <pose>0.35 -0.15 0.1 0 0 -0.785</pose>
         <topic>/model/mower/ultrasonic/2</topic>
         <update_rate>20</update_rate>
-        <ray>
-          <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal><vertical><samples>1</samples><resolution>0.01</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical></scan>
-          <range><min>0.02</min><max>4.0</max><resolution>0.01</resolution></range>
-        </ray>
+        <lidar>
+          <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.175</min_angle><max_angle>0.175</max_angle></horizontal></scan>
+          <range><min>0.25</min><max>4.0</max><resolution>0.01</resolution></range>
+        </lidar>
         <always_on>1</always_on>
+        <visualize>true</visualize>
       </sensor>
       <sensor name="ultrasonic_3" type="gpu_lidar">
         <pose>0 0.25 0.1 0 0 1.5708</pose>
         <topic>/model/mower/ultrasonic/3</topic>
         <update_rate>20</update_rate>
-        <ray>
-          <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal><vertical><samples>1</samples><resolution>0.01</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical></scan>
-          <range><min>0.02</min><max>4.0</max><resolution>0.01</resolution></range>
-        </ray>
+        <lidar>
+          <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.175</min_angle><max_angle>0.175</max_angle></horizontal></scan>
+          <range><min>0.25</min><max>4.0</max><resolution>0.01</resolution></range>
+        </lidar>
         <always_on>1</always_on>
+        <visualize>true</visualize>
       </sensor>
       <sensor name="ultrasonic_4" type="gpu_lidar">
         <pose>0 -0.25 0.1 0 0 -1.5708</pose>
         <topic>/model/mower/ultrasonic/4</topic>
         <update_rate>20</update_rate>
-        <ray>
-          <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal><vertical><samples>1</samples><resolution>0.01</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical></scan>
-          <range><min>0.02</min><max>4.0</max><resolution>0.01</resolution></range>
-        </ray>
+        <lidar>
+          <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.175</min_angle><max_angle>0.175</max_angle></horizontal></scan>
+          <range><min>0.25</min><max>4.0</max><resolution>0.01</resolution></range>
+        </lidar>
         <always_on>1</always_on>
+        <visualize>true</visualize>
       </sensor>
       <sensor name="ultrasonic_5" type="gpu_lidar">
         <pose>-0.35 0 0.1 0 0 3.14159</pose>
         <topic>/model/mower/ultrasonic/5</topic>
         <update_rate>20</update_rate>
-        <ray>
-          <scan><horizontal><samples>1</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>0</max_angle></horizontal><vertical><samples>1</samples><resolution>0.01</resolution><min_angle>0</min_angle><max_angle>0</max_angle></vertical></scan>
-          <range><min>0.02</min><max>4.0</max><resolution>0.01</resolution></range>
-        </ray>
+        <lidar>
+          <scan><horizontal><samples>3</samples><resolution>1</resolution><min_angle>-0.175</min_angle><max_angle>0.175</max_angle></horizontal></scan>
+          <range><min>0.25</min><max>4.0</max><resolution>0.01</resolution></range>
+        </lidar>
         <always_on>1</always_on>
+        <visualize>true</visualize>
       </sensor>
       <!-- IMU (optional: for use_ekf:=true). Frame base_link, REP-103. -->
       <sensor name="imu_sensor" type="imu">

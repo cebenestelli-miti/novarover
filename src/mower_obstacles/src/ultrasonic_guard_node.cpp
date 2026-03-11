@@ -19,9 +19,13 @@ public:
     last_hazard_level_(0),
     moving_forward_(true)
   {
-    declare_parameter("stop_dist_m", 0.40);
-    declare_parameter("blocked_dist_m", 0.60);
-    declare_parameter("caution_dist_m", 1.0);
+    // Distances at which we change behavior.
+    // stop_dist_m: hard safety stop (very close).
+    // blocked_dist_m: start BLOCKED behavior (pivot/go-around).
+    // caution_dist_m: start CAUTION behavior (slow + steer).
+    declare_parameter("stop_dist_m", 0.30);
+    declare_parameter("blocked_dist_m", 1.20);
+    declare_parameter("caution_dist_m", 2.0);
     declare_parameter("publish_hz", 10.0);
     declare_parameter("data_timeout_sec", 1.0);
     stop_dist_m_ = get_parameter("stop_dist_m").as_double();
@@ -88,6 +92,10 @@ private:
       const float min_m = last_msg_->min_range_m;
       const float max_m = last_msg_->max_range_m;
       for (size_t i = 0; i < 6u; ++i) {
+        // Side sensors (3=left, 4=right) never trigger a hard stop — the robot
+        // only moves forward/backward, so lateral readings indicate proximity
+        // when turning, not an imminent collision.
+        if (i == 3u || i == 4u) continue;
         // Rear sensor (5) only affects stop when moving backward.
         if (i == REAR_INDEX && moving_forward_) continue;
         const float r = last_msg_->range_m[i];

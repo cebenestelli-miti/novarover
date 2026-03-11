@@ -44,6 +44,8 @@ def generate_launch_description():
             description='Frame for mission/waypoints (odom or map). Use odom for Gazebo sim.'),
         DeclareLaunchArgument('simulate_obstacle_range_m', default_value='-1.0',
             description='Mock only: if > 0, front ultrasonics report this range (m) to test go-around (blocked-skip). -1 = off.'),
+        DeclareLaunchArgument('mock_publish_odom', default_value='true',
+            description='Mock base: set false when Gazebo bridge provides /odom/raw to avoid dual-publisher conflict.'),
         # Mock base: for development/testing without hardware
         Node(
             package='mower_base',
@@ -57,6 +59,7 @@ def generate_launch_description():
                 'ultrasonic_max_range_m': 4.0,
                 'simulate_obstacle_range_m': LaunchConfiguration('simulate_obstacle_range_m'),
                 'publish_ultrasonic': LaunchConfiguration('publish_ultrasonic'),
+                'publish_odom': LaunchConfiguration('mock_publish_odom'),
             }],
         ),
         # Real base (Arduino bridge): for physical deployment or Gazebo (stub with publish_odom:=false)
@@ -76,13 +79,19 @@ def generate_launch_description():
             package='ros_mower_core',
             executable='safety_manager_node',
             name='safety_manager',
-            parameters=[{'require_estop_release': True}],
+            parameters=[{
+                'require_estop_release': True,
+                # Increased from 0.5s: WSL2 Gazebo can pause physics briefly during
+                # rapid turns, causing sim_helpers heartbeat gaps up to ~3s.
+                'base_timeout_sec': 5.0,
+                'heartbeat_startup_grace_sec': 8.0,
+            }],
         ),
         Node(
             package='mower_obstacles',
             executable='ultrasonic_guard_node',
             name='ultrasonic_guard',
-            parameters=[{'stop_dist_m': 0.40, 'blocked_dist_m': 0.60}],
+            parameters=[{'stop_dist_m': 0.30, 'blocked_dist_m': 1.20, 'caution_dist_m': 2.0}],
         ),
         Node(
             package='mower_mission',
@@ -103,13 +112,14 @@ def generate_launch_description():
             parameters=[
                 LaunchConfiguration('farm_config'),
                 {
-                    'waypoint_tolerance_m': 0.4,
                     'max_linear_speed': 0.5,
-                    'max_angular_speed': 0.8,
                     'mission_file': LaunchConfiguration('mission_file'),
                     'mission_frame_id': LaunchConfiguration('mission_frame_id'),
                 },
             ],
+            # Isolate navigation command stream to avoid interference from other /cmd_vel publishers
+            # (teleop, stale nodes, etc.). Gazebo sim_helpers can be configured to listen to this.
+            remappings=[('/cmd_vel', '/cmd_vel_nav')],
         ),
         # Simple odom forward (no IMU/GPS fusion). Used when use_ekf is false.
         Node(

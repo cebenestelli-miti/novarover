@@ -34,5 +34,8 @@ install(DIRECTORY include/
 install(DIRECTORY config/
   DESTINATION share/${PROJECT_NAME}/config
   USE_SOURCE_PERMISSIONS)
+install(DIRECTORY config/missions/
+  DESTINATION share/${PROJECT_NAME}/missions
+  USE_SOURCE_PERMISSIONS)
 
 ament_package()

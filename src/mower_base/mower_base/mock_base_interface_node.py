@@ -15,11 +15,11 @@ class MockBaseInterfaceNode(Node):
         self.declare_parameter('ultrasonic_clear_range_m', 2.0)
         self.declare_parameter('ultrasonic_min_range_m', 0.02)
         self.declare_parameter('ultrasonic_max_range_m', 4.0)
-        self.declare_parameter('simulate_obstacle_range_m', -1.0,
-            description='If > 0, publish this range (m) for front sensors 0,1,2 to simulate obstacle (for testing go-around). -1 = off.')
+        self.declare_parameter('simulate_obstacle_range_m', -1.0)
         self.declare_parameter('odom_frame_id', 'odom')
         self.declare_parameter('base_frame_id', 'base_link')
         self.declare_parameter('publish_ultrasonic', True)
+        self.declare_parameter('publish_odom', True)
 
         self.publish_rate_hz = self.get_parameter('publish_rate_hz').value
         self.ultrasonic_clear = self.get_parameter('ultrasonic_clear_range_m').value
@@ -31,6 +31,8 @@ class MockBaseInterfaceNode(Node):
         self.base_frame_id = self.get_parameter('base_frame_id').value
         p = self.get_parameter('publish_ultrasonic').value
         self.publish_ultrasonic = p if isinstance(p, bool) else (str(p).lower() == 'true')
+        po = self.get_parameter('publish_odom').value
+        self.publish_odom = po if isinstance(po, bool) else (str(po).lower() == 'true')
 
         self.stop_asserted = False
         self.last_cmd_vel = Twist()
@@ -39,7 +41,10 @@ class MockBaseInterfaceNode(Node):
         self.yaw = 0.0
 
         self.heartbeat_pub = self.create_publisher(Empty, '/base/heartbeat', 10)
-        self.odom_pub = self.create_publisher(Odometry, '/odom/raw', 10)
+        if self.publish_odom:
+            self.odom_pub = self.create_publisher(Odometry, '/odom/raw', 10)
+        else:
+            self.odom_pub = None
         if self.publish_ultrasonic:
             self.ultrasonic_pub = self.create_publisher(UltrasonicArray, '/ultrasonic/ranges', 10)
         else:
@@ -48,7 +53,9 @@ class MockBaseInterfaceNode(Node):
         self.create_subscription(Twist, '/cmd_vel', self._cb_cmd_vel, 10)
 
         self.timer = self.create_timer(1.0 / self.publish_rate_hz, self._timer_cb)
-        self.get_logger().info('Mock base interface: publish_ultrasonic=%s' % ('true' if self.publish_ultrasonic else 'false'))
+        self.get_logger().info('Mock base interface: publish_ultrasonic=%s publish_odom=%s' % (
+            'true' if self.publish_ultrasonic else 'false',
+            'true' if self.publish_odom else 'false'))
 
     def _cb_safety_stop(self, msg):
         self.stop_asserted = msg.data
@@ -91,7 +98,8 @@ class MockBaseInterfaceNode(Node):
         odom.twist.twist.angular.x = 0.0
         odom.twist.twist.angular.y = 0.0
         odom.twist.twist.angular.z = vz
-        self.odom_pub.publish(odom)
+        if self.odom_pub is not None:
+            self.odom_pub.publish(odom)
 
         # Ultrasonic: clear distances, or simulated obstacle on front sensors (for go-around testing)
         if self.publish_ultrasonic and self.ultrasonic_pub is not None:

@@ -18,12 +18,14 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('world', default_value=world_path, description='Full path to world SDF file'),
+        DeclareLaunchArgument('cmd_vel_in_topic', default_value='/cmd_vel',
+                              description='ROS topic for sim_helpers to consume before gating to /cmd_vel_gz'),
         # So Gazebo resolves package://mower_description/...
         AppendEnvironmentVariable(name='GZ_SIM_RESOURCE_PATH', value=resource_path),
         # Start Gazebo with the world (world includes mower model)
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(pkg_gz_sim, 'launch', 'gz_sim.launch.py')),
-            launch_arguments={'gz_args': LaunchConfiguration('world')}.items(),
+            launch_arguments={'gz_args': [LaunchConfiguration('world'), ' -r']}.items(),
         ),
         # Bridge ROS <-> Gazebo (after short delay so sim is up)
         TimerAction(
@@ -38,7 +40,10 @@ def generate_launch_description():
                 ),
                 # Sim topic contract: /base/heartbeat (10 Hz), /mower/stall (1 Hz, false)
                 ExecuteProcess(
-                    cmd=['python3', sim_helpers_script],
+                    cmd=[
+                        'python3', sim_helpers_script,
+                        '--ros-args', '-p', ['cmd_vel_in_topic:=', LaunchConfiguration('cmd_vel_in_topic')]
+                    ],
                     name='sim_helpers_node',
                     output='screen',
                 ),

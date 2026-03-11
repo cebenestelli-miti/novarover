@@ -37,6 +37,11 @@ waypoint_follower:
     farm_origin_lon: 151.929198
     farm_origin_alt: 0.0
     mission_frame_id: "map"
+    max_angular_speed: 1.2
+    caution_angular_bias_gain: 1.5
+    caution_side_bias_gain: 0.6
+    caution_linear_scale: 0.3
+    front_pivot_dist_m: 1.0
     # When BLOCKED: turn in place at this rate (rad/s) to try to clear forward sensors; 0 = no turn.
     blocked_turn_angular_rad_s: 0.5
     # After this many seconds blocked, skip current waypoint and go to next. 0 = never skip.

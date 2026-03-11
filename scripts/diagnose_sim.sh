@@ -19,8 +19,20 @@ echo "=== Key topics ==="
 ros2 topic list 2>&1 | grep -E "odom|cmd_vel|mission/state|safety|ultrasonic|estop" || true
 echo ""
 
-echo "=== If bringup is running: mission/state (state 2 = RUNNING) ==="
+echo "=== Mission state (state 2 = RUNNING; if not 2, run arm+start in Terminal 4) ==="
 timeout 2 ros2 topic echo /mission/state --once 2>&1 || echo "(topic not available or no message)"
 echo ""
 
-echo "Done. If node list is empty, start bringup in another terminal first."
+echo "=== /safety/stop (must be false to move; if true, run E-stop release in Terminal 3) ==="
+timeout 2 ros2 topic echo /safety/stop --once 2>&1 || echo "(topic not available)"
+echo ""
+
+echo "=== /odom (must be publishing; if timeout, Gazebo/bridge/localization not running) ==="
+timeout 2 ros2 topic echo /odom --once 2>&1 | head -5 || echo "(no message)"
+echo ""
+
+echo "=== /cmd_vel (should show non-zero linear.x when mission RUNNING and not blocked) ==="
+timeout 2 ros2 topic echo /cmd_vel --once 2>&1 | head -8 || echo "(no message)"
+echo ""
+
+echo "Done. If mission state != 2: run arm+start. If safety/stop true: run E-stop. If no /odom: start Gazebo and bringup."

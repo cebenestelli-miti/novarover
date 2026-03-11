@@ -1,0 +1,6 @@
+# 8x3 m rectangle mission in odom frame (meters).
+# Start at (0,0), traverse 8 m x 3 m rectangle CCW, return home.
+8.0 0.0
+8.0 3.0
+0.0 3.0
+0.0 0.0

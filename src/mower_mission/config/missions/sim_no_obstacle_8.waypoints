@@ -1,0 +1,9 @@
+# No-obstacle tracking test (7 waypoints)
+# 1-2 straight, 3-5 left, 6 north, 7 return home.
+0 2
+0 4
+-2 4
+-4 4
+-6 4
+-6 7
+0 0

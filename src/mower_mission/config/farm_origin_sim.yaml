@@ -17,7 +17,23 @@ waypoint_follower:
     farm_origin_lon: 0.0
     farm_origin_alt: 0.0
     mission_frame_id: "odom"
-    blocked_turn_angular_rad_s: 0.5
-    blocked_skip_timeout_sec: 15.0
-    caution_stuck_timeout_sec: 30.0
-    caution_stuck_min_fraction: 0.02
+    max_linear_speed: 0.5
+    max_angular_speed: 1.2
+    waypoint_tolerance_m: 0.2
+    debug_log: true
+    debug_log_period_ms: 1000
+    # Bug state machine tuning
+    bug_trigger_dist_m: 2.0
+    bug_hard_block_dist_m: 0.45
+    bug_follow_speed_ms: 0.20
+    bug_wall_target_dist_m: 0.75
+    bug_wall_kp: 1.8
+    bug_leave_progress_m: 0.5
+    bug_leave_heading_rad: 0.40
+    bug_leave_front_clear_m: 1.6
+    bug_leave_min_along_goal_m: 1.8
+    bug_min_follow_ticks: 12
+    bug_wall_lost_ticks: 5
+    bug_turn_min_rad: 1.0
+    bug_trigger_ticks: 2
+    bug_blocked_ticks: 15

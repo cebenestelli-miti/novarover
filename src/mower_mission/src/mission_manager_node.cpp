@@ -270,11 +270,7 @@ private:
     const std_srvs::srv::Trigger::Request::SharedPtr,
     std_srvs::srv::Trigger::Response::SharedPtr res)
   {
-    if (mission_state_ != MISSION_ABORTED && mission_state_ != MISSION_COMPLETE) {
-      res->success = false;
-      res->message = "reset only from ABORTED or COMPLETE";
-      return;
-    }
+    // From any state: go to IDLE so you can arm and start again (no need to abort first).
     mission_state_ = MISSION_IDLE;
     mission_reason_ = "";
     res->success = true;

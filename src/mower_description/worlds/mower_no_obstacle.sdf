@@ -1,7 +1,6 @@
 <?xml version="1.0"?>
 <sdf version="1.9">
-  <world name="mower_empty">
-    <!-- Lower update_rate reduces GUI start/pause flicker on some hosts. -->
+  <world name="mower_no_obstacle">
     <physics name="1ms" type="ignored">
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1.0</real_time_factor>
@@ -15,7 +14,6 @@
     </plugin>
     <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"></plugin>
 
-    <!-- Required for NavSat (GPS) sensor: set lat/lon to your test origin. -->
     <spherical_coordinates>
       <surface_model>EARTH_WGS84</surface_model>
       <world_frame_orientation>ENU</world_frame_orientation>
@@ -53,22 +51,5 @@
       <name>mower</name>
       <pose>0 0 0 0 0 0</pose>
     </include>
-
-    <!-- Obstacle for sim obstacle-avoidance test: placed at x=5 so the robot has full detection
-         range while travelling WP0(2,0)→WP1(6,0).  The go-around triggers at ~x=3.8 (1.5 m
-         from the obstacle surface) giving plenty of room to manoeuvre. -->
-    <model name="obstacle_box">
-      <static>true</static>
-      <pose>5 0 0.15 0 0 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry><box><size>0.5 0.5 0.3</size></box></geometry>
-        </collision>
-        <visual name="visual">
-          <geometry><box><size>0.5 0.5 0.3</size></box></geometry>
-          <material><ambient>0.8 0.2 0.2 1</ambient><diffuse>0.8 0.2 0.2 1</diffuse><specular>0.1 0.1 0.1 1</specular></material>
-        </visual>
-      </link>
-    </model>
   </world>
 </sdf>

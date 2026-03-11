@@ -1,6 +1,36 @@
 # Gazebo: Full bringup and obstacle-avoidance mission test
 
-Steps to run Gazebo with the mower, bring up the stack (with ultrasonic guard and waypoint follower), release E-stop, and run a mission that drives toward an obstacle so you can test **stop** (blocked), **caution** (slow + steer bias), and rear-sensor-only-on-reverse behavior.
+> **WSL2 note:** `gpu_lidar` sensors require a GPU renderer and do not function in WSL2.
+> Obstacle detection is handled in software by `sim_helpers_node`, which uses ray-circle
+> intersection against known obstacle positions derived from `/odom/raw`. No code changes
+> are needed to run on real hardware — the software sensor is sim-only.
+
+## Obstacle avoidance algorithm (perpendicular-drive with post-clear)
+
+The `waypoint_follower_node` implements a reactive perpendicular-drive strategy:
+
+1. **NORMAL** — robot drives straight toward the current waypoint at full speed.
+2. **AVOID triggered** — sensor 1 (front-center, 0°) reads closer than `go_around_trigger_dist_m`
+   (2.0 m).  Angled sensors 0 and 2 (±45°) have a near-disabled threshold (0.25 m = min_range)
+   to prevent false triggers when passing the obstacle laterally.  Requires **3 consecutive**
+   triggered ticks (0.3 s) before AVOID starts — filters single-tick look-back false positives.
+3. **AVOID phase A – TURNING** — robot rotates in the chosen direction (picks the clearer side)
+   until front is clear and heading is within ~11° of the perpendicular heading.
+4. **AVOID phase B – DRIVING** — robot drives forward at `go_around_speed_ms` (0.25 m/s) while
+   holding the perpendicular heading (P-control). Tracks when the wall sensor first detects the
+   obstacle (`side_saw_`), then detects it going clear.
+5. **AVOID phase C – POST_CLEAR** — after the wall sensor clears, robot continues driving straight
+   (same perpendicular heading) for `go_around_post_clear_m` (2.5 m). This guarantees the robot
+   is far enough north of the obstacle before resuming the original waypoint heading — prevents
+   the exit path from clipping the obstacle's bounding sphere.
+6. **AVOID exit** — when post_clear distance is reached and front sensors are clear: resume NORMAL.
+
+Key design decisions:
+- Side sensors (3 and 4): **excluded from `stop_request`** (never cause safety stop while wall-following).
+- Obstacle sphere model radius: **0.25 m** (= box half-side, not half-diagonal) to match actual
+  box face geometry and prevent over-predicted stop_request from the lateral pass.
+- Heartbeat timeout: **5.0 s** (was 0.5 s) — WSL2 Gazebo physics can pause briefly during rapid
+  turns, causing transient heartbeat gaps in `sim_helpers_node`.
 
 ---
 
@@ -9,8 +39,7 @@ Steps to run Gazebo with the mower, bring up the stack (with ultrasonic guard an
 ```bash
 cd ~/ros2_ws
 source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-colcon build --packages-select mower_description mower_mission mower_bringup mower_base
+colcon build --packages-select mower_description mower_mission mower_base mower_obstacles ros_mower_core
 source install/setup.bash
 ```
 
@@ -18,122 +47,126 @@ source install/setup.bash
 
 ---
 
-## 2. Terminal 1: Start Gazebo
+## 2. Terminal 1: Start Gazebo (leave running)
 
 ```bash
 cd ~/ros2_ws
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
-ros2 launch mower_description gazebo.launch.py
+ros2 launch mower_description gazebo.launch.py cmd_vel_in_topic:=/cmd_vel_nav
 ```
 
-Leave this running. The world includes the mower and a red **obstacle box** at (3, 0). Physics update rate is set to 250 Hz to reduce start/pause button flicker on some hosts.
+Leave this running. The world loads the mower at (0, 0) and a **red obstacle box** at (5, 0).
+The launch starts with `-r` (auto-play) and starts the bridge + `sim_helpers_node` 3 s after
+Gazebo.
+
+> **Stale process tip:** if the first odom check shows x >> 0, run
+> `pkill -9 -f "gz sim"` and restart.
 
 ---
 
-## 3. Terminal 2: Bring up the mower stack (sim mode)
-
-Use **odom** frame and **real base** (Gazebo provides `/odom/raw`, sim_helpers provides `/ultrasonic/ranges`). Pass the sim farm config and mission file so mission_manager and waypoint_follower use the obstacle-test waypoints.
+## 3. Terminal 2: Bringup (leave running)
 
 ```bash
 cd ~/ros2_ws
 source /opt/ros/jazzy/setup.bash
 source install/setup.bash
-ros2 launch mower_bringup bringup.launch.py \
-  use_real_base:=true \
-  publish_odom:=false \
+ros2 launch mower_base bringup.launch.py \
+  use_sim:=true \
   publish_ultrasonic:=false \
-  use_ekf:=false \
+  mock_publish_odom:=false \
   mission_frame_id:=odom \
   farm_config:=$(ros2 pkg prefix mower_mission)/share/mower_mission/config/farm_origin_sim.yaml \
-  mission_file:=$(ros2 pkg prefix mower_mission)/share/mower_mission/config/missions/sim_obstacle_test.waypoints
+  mission_file:=$(ros2 pkg prefix mower_mission)/share/mower_mission/missions/sim_obstacle_test.waypoints
 ```
 
-Leave this running. This starts safety_manager, ultrasonic_guard, mission_manager, waypoint_follower, and localization (odom passthrough).
+Key flags:
+- `mock_publish_odom:=false` — Gazebo bridge owns `/odom/raw`; no dual-publisher.
+- `publish_ultrasonic:=false` — `sim_helpers_node` provides `/ultrasonic/ranges`.
 
-**If `/mission/arm` or `/mission/start` say "waiting for service to become available":** bringup (Terminal 2) must be running and **mission_manager must not have crashed**. Check Terminal 2 for `[ERROR] [mission_manager_node]: process has died`. If you see that, mission_manager failed on startup (e.g. missing `geofence_polygon` in sim config — the sim config is now fixed). Run `ros2 node list` in another sourced terminal; you should see `mission_manager` and `waypoint_follower`. Optional: run `./scripts/diagnose_sim.sh` (after `source install/setup.bash`) to list nodes and mission services.
+### Square waypoint sanity test (no obstacle logic required)
 
-**If E-stop is released but the robot still doesn't move:** you must run **Terminal 4** (arm + start). The waypoint follower only publishes `/cmd_vel` when the mission is **RUNNING**. Check: `ros2 topic echo /mission/state` (state 2 = RUNNING) and `ros2 topic echo /cmd_vel` (should show non-zero linear.x when running).
+To validate frame + waypoint interpretation with a simple 1 m square mission:
+
+```bash
+ros2 launch mower_base bringup.launch.py \
+  use_sim:=true \
+  publish_ultrasonic:=false \
+  mock_publish_odom:=false \
+  mission_frame_id:=odom \
+  farm_config:=$(ros2 pkg prefix mower_mission)/share/mower_mission/config/farm_origin_sim.yaml \
+  mission_file:=$(ros2 pkg prefix mower_mission)/share/mower_mission/missions/sim_square_1m.waypoints
+```
 
 ---
 
-## 4. Terminal 3: Release E-stop
-
-The robot will not move until E-stop is released.
+## 4. Terminal 3: Release E-stop (one-shot)
 
 ```bash
-cd ~/ros2_ws
 source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-ros2 topic pub /mower/estop mower_msgs/msg/EStop "{stamp: {sec: 0, nanosec: 0}, engaged: false, source: sim}" -r 1
+source ~/ros2_ws/install/setup.bash
+ros2 topic pub --once /mower/estop mower_msgs/msg/EStop "{engaged: false, source: 'operator'}"
 ```
 
-Leave this running so E-stop stays released.
+Wait ~3 s for `safety_manager` to log `State transition -> IDLE`.
 
 ---
 
 ## 5. Terminal 4: Arm and start the mission
 
-Run **arm** then **start** in the same terminal. If you see `start only from ARMED or IDLE`, the mission_manager was previously changed to **not** transition ARMED→PAUSED on safety; rebuild `mower_mission` and try again.
-
 ```bash
-cd ~/ros2_ws
 source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-ros2 service call /mission/arm std_srvs/srv/Trigger {}
+source ~/ros2_ws/install/setup.bash
+ros2 service call /mission/arm   std_srvs/srv/Trigger {}
 ros2 service call /mission/start std_srvs/srv/Trigger {}
 ```
 
-The robot will drive from (0,0) toward (2,0), then (6,0), etc. The **obstacle box** is at (3,0):
+Expected sequence (watch bringup terminal):
+1. **Reached WP 0 (2.00, 0.00)**
+2. **AVOID START dir=LEFT wall_sensor=4** — obstacle detected at ~2 m
+3. Robot arcs left (north), wall-follows the obstacle
+4. **AVOID COMPLETE → resuming NORMAL** (obstacle cleared from side sensor)
+5. May cycle 2–4× as the robot re-detects during final approach — this is normal
+6. **Reached WP 1 (6.00, 0.00)** — robot is now *past* the obstacle
+7. WP 2 → WP 3 → WP 4 → **All waypoints reached – calling mission/complete**
+8. Mission state transitions to **COMPLETE (5)**
 
-- **CLEAR** (min range ≥ 1 m): normal waypoint following.
-- **CAUTION** (0.6 m &lt; min range &lt; 1 m): reduced speed + steering bias away from the obstacle. If the robot doesn’t close at least 2% of the distance to the waypoint in 30 s, it skips that waypoint (caution-stuck skip).
-- **BLOCKED** (min range ≤ 0.6 m): waypoint follower stops forward motion. In the band **0.4 m &lt; range ≤ 0.6 m** there is no safety stop, so the robot **pivots** in place toward the clearer side; if still blocked after 15 s it skips to the next waypoint.
-- **Safety stop** (min range ≤ 0.4 m): **obstacles/stop_request** true → safety state OBSTACLE → base ignores cmd_vel (no motion, no pivot). After 15 s blocked the waypoint is still skipped.
-
-You can watch `/obstacles/hazard_level` (0=clear, 1=caution, 2=blocked) and `/safety/state` to confirm behavior.
+Total run time: ~60–75 s.
 
 ---
 
-## 6. Optional: Monitor topics
-
-In extra terminals (with the same `source` as above):
+## 6. Monitor topics
 
 ```bash
-# Hazard level: 0 clear, 1 caution, 2 blocked
+# Hazard level: 0=clear 1=caution 2=blocked
 ros2 topic echo /obstacles/hazard_level
 
-# Safety state (reason when stopped)
-ros2 topic echo /safety/state
-
-# Ultrasonic ranges (min/max and per-sensor)
+# Ultrasonic ranges (6 sensors; NaN = nothing in range)
 ros2 topic echo /ultrasonic/ranges
 
-# Command actually sent to Gazebo
+# Safety stop flag
+ros2 topic echo /safety/stop
+
+# Velocity sent to Gazebo
 ros2 topic echo /cmd_vel_gz
+
+# Mission state: 0=idle 1=armed 2=running 3=paused 4=aborted 5=complete
+ros2 topic echo /mission/state
 ```
 
 ---
 
-## 7. Abort / stop mission
+## 7. Abort / reset / rerun
 
 ```bash
-ros2 service call /mission/abort std_srvs/srv/Trigger {}
-```
-
-## 8. Run the mission again (after it ran once)
-
-The mission state stays RUNNING (or COMPLETE/ABORTED) after the first run. You can only **arm** from **IDLE**. So to run again:
-
-```bash
-# If still running, abort first
+# Stop a running mission
 ros2 service call /mission/abort std_srvs/srv/Trigger {}
 
-# Go back to IDLE (allowed from ABORTED or COMPLETE)
+# Return to IDLE (from PAUSED, ABORTED, or COMPLETE)
 ros2 service call /mission/reset std_srvs/srv/Trigger {}
 
-# Then arm and start as usual
-ros2 service call /mission/arm std_srvs/srv/Trigger {}
+# Re-arm and start
+ros2 service call /mission/arm   std_srvs/srv/Trigger {}
 ros2 service call /mission/start std_srvs/srv/Trigger {}
 ```
 
@@ -143,9 +176,16 @@ ros2 service call /mission/start std_srvs/srv/Trigger {}
 
 | Terminal | Role |
 |----------|------|
-| 1 | Gazebo + bridge + sim_helpers (world, mower, obstacle box, `/odom/raw`, `/ultrasonic/ranges`) |
-| 2 | Bringup (safety, ultrasonic_guard, mission_manager, waypoint_follower, odom→/odom) |
-| 3 | E-stop released (`/mower/estop` at 1 Hz) |
-| 4 | Arm + start mission (and optional abort) |
+| 1 | Gazebo + bridge + `sim_helpers_node` (world, robot model, `/odom/raw`, heartbeat, `/cmd_vel_gz`) |
+| 2 | Bringup (safety_manager, ultrasonic_guard, mission_manager, waypoint_follower, localization) |
+| 3 | E-stop release (one-shot) |
+| 4 | Arm + start mission |
 
-The **rear sensor** (index 5) only contributes to stop when moving **backward** (`/cmd_vel` linear.x &lt; 0); when moving forward, the rear ultrasonic is ignored by the guard.
+### Obstacle sensing in WSL2
+
+`sim_helpers_node` subscribes to `/odom/raw` and uses ray-circle intersection against the
+`obstacle_positions` parameter (default: `[5.0, 0.0, 0.36]` — obstacle at x=5, y=0, radius 0.36 m)
+to synthesise the same `/ultrasonic/ranges` that real hardware produces from scan topics.
+
+To add more obstacles, edit the `obstacle_positions` parameter in `sim_helpers_node.py`
+(flat list: x0 y0 r0 x1 y1 r1 …).

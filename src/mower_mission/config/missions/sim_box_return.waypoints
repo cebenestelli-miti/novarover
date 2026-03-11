@@ -1,0 +1,8 @@
+# Box test in odom frame (meters). No obstacles.
+# Start (0,0), go around a 4 m box, then return home.
+0 0
+2 2
+-2 2
+-2 -2
+2 -2
+0 0
