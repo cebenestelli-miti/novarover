@@ -46,6 +46,8 @@ def generate_launch_description():
             description='Mock only: if > 0, front ultrasonics report this range (m) to test go-around (blocked-skip). -1 = off.'),
         DeclareLaunchArgument('mock_publish_odom', default_value='true',
             description='Mock base: set false when Gazebo bridge provides /odom/raw to avoid dual-publisher conflict.'),
+    DeclareLaunchArgument('waypoint_tolerance_m', default_value='0.2',
+        description='Waypoint reach tolerance (meters) for waypoint_follower.'),
         # Mock base: for development/testing without hardware
         Node(
             package='mower_base',
@@ -115,6 +117,7 @@ def generate_launch_description():
                     'max_linear_speed': 0.5,
                     'mission_file': LaunchConfiguration('mission_file'),
                     'mission_frame_id': LaunchConfiguration('mission_frame_id'),
+                    'waypoint_tolerance_m': LaunchConfiguration('waypoint_tolerance_m'),
                 },
             ],
             # Isolate navigation command stream to avoid interference from other /cmd_vel publishers

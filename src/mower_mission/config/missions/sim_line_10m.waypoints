@@ -1,0 +1,4 @@
+# Straight 10 m line in odom frame (meters).
+# Start at (0,0), drive to (10,0).
+10.0 0.0
+

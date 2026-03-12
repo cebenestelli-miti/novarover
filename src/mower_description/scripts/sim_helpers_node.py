@@ -73,12 +73,9 @@ class SimHelpersNode(Node):
         self.declare_parameter("ultrasonic_max_range_m", 4.0)
         self.declare_parameter("ultrasonic_timeout_sec", 0.5)
         # Obstacle list: flat [x0, y0, r0, x1, y1, r1, ...] in odom/world frame.
-        # Default matches the obstacle box in mower_empty.sdf (0.5x0.5 box → radius ~0.36m,
-        # placed at x=5 so the robot has full detection range for WP0→WP1).
-        # radius=0.25m matches the box half-side (0.5m box → 0.25m half-side).
-        # 0.36m (half-diagonal) over-predicted the north/south faces, causing
-        # spurious stop_request when passing the obstacle laterally.
-        self.declare_parameter("obstacle_positions", [5.0, 0.0, 0.25])
+        # Default: empty (no synthetic obstacles); set at runtime when you explicitly
+        # want to test obstacle avoidance.
+        self.declare_parameter("obstacle_positions", [])
 
         self.ultrasonic_min_range = float(self.get_parameter("ultrasonic_min_range_m").value)
         self.ultrasonic_max_range = float(self.get_parameter("ultrasonic_max_range_m").value)

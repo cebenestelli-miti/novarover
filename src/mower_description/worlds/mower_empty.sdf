@@ -54,19 +54,86 @@
       <pose>0 0 0 0 0 0</pose>
     </include>
 
-    <!-- Obstacle for sim obstacle-avoidance test: placed at x=5 so the robot has full detection
-         range while travelling WP0(2,0)→WP1(6,0).  The go-around triggers at ~x=3.8 (1.5 m
-         from the obstacle surface) giving plenty of room to manoeuvre. -->
-    <model name="obstacle_box">
+    <!-- Visual waypoint markers for sim_square_5m (odom/world frame).
+         These are tall cylinders placed at:
+           WP0: (5,0)
+           WP1: (5,5)
+           WP2: (0,5)
+           WP3: (0,0)
+         to visually validate that Gazebo world coordinates match
+         the waypoint follower's mission coordinates. -->
+    <model name="wp_marker_5_0">
       <static>true</static>
-      <pose>5 0 0.15 0 0 0</pose>
+      <pose>5 0 1.0 0 0 0</pose>
       <link name="link">
-        <collision name="collision">
-          <geometry><box><size>0.5 0.5 0.3</size></box></geometry>
-        </collision>
         <visual name="visual">
-          <geometry><box><size>0.5 0.5 0.3</size></box></geometry>
-          <material><ambient>0.8 0.2 0.2 1</ambient><diffuse>0.8 0.2 0.2 1</diffuse><specular>0.1 0.1 0.1 1</specular></material>
+          <geometry>
+            <cylinder>
+              <radius>0.1</radius>
+              <length>2.0</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.0 0.0 1.0 1</ambient>
+            <diffuse>0.0 0.0 1.0 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wp_marker_5_5">
+      <static>true</static>
+      <pose>5 5 1.0 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <cylinder>
+              <radius>0.1</radius>
+              <length>2.0</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>1.0 0.0 0.0 1</ambient>
+            <diffuse>1.0 0.0 0.0 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wp_marker_0_5">
+      <static>true</static>
+      <pose>0 5 1.0 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <cylinder>
+              <radius>0.1</radius>
+              <length>2.0</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>0.0 1.0 0.0 1</ambient>
+            <diffuse>0.0 1.0 0.0 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wp_marker_0_0">
+      <static>true</static>
+      <pose>0 0 1.0 0 0 0</pose>
+      <link name="link">
+        <visual name="visual">
+          <geometry>
+            <cylinder>
+              <radius>0.1</radius>
+              <length>2.0</length>
+            </cylinder>
+          </geometry>
+          <material>
+            <ambient>1.0 1.0 0.0 1</ambient>
+            <diffuse>1.0 1.0 0.0 1</diffuse>
+          </material>
         </visual>
       </link>
     </model>

@@ -12,12 +12,15 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/u_int8.hpp>
 #include <mower_msgs/msg/mission_state.hpp>
 #include <mower_msgs/msg/ultrasonic_array.hpp>
 #include <std_srvs/srv/trigger.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 #include <mower_mission/mission_loader.hpp>
 
@@ -56,15 +59,16 @@ public:
     hazard_level_(0),
     nav_state_(NavState::GO_TO_GOAL),
     follow_turning_(false),
+    follow_left_wall_(false),
     follow_start_yaw_(0.0),
     hit_goal_dist_(0.0),
     hit_x_(0.0),
     hit_y_(0.0),
     hit_goal_dir_x_(1.0),
     hit_goal_dir_y_(0.0),
-    saw_right_wall_(false),
+    saw_side_wall_(false),
     follow_ticks_(0),
-    right_lost_ticks_(0),
+    side_lost_ticks_(0),
     front_blocked_ticks_(0),
     blocked_ticks_(0)
   {
@@ -79,17 +83,21 @@ public:
     declare_parameter("mission_frame_id",           std::string("odom"));
     declare_parameter("debug_log",                  true);
     declare_parameter("debug_log_period_ms",        1000);
+    declare_parameter("debug_obstacle_center_x",    0.0);
+    declare_parameter("debug_obstacle_center_y",    0.0);
+    declare_parameter("debug_obstacle_radius_m",    0.0);
 
-    // Bug behavior tuning
-    declare_parameter("bug_trigger_dist_m",              2.0);   // caution trigger
+    // Bug behavior tuning (aligned with ultrasonic_guard defaults: stop=0.30, blocked=1.20, caution=2.0)
+    declare_parameter("bug_trigger_dist_m",              2.0);   // enter BUG when in ultrasonic CAUTION
     declare_parameter("bug_hard_block_dist_m",           0.45);  // too close in front
-    declare_parameter("bug_follow_speed_ms",             0.23);
-    declare_parameter("bug_wall_target_dist_m",          0.55);  // keep obstacle on right
-    declare_parameter("bug_wall_kp",                     2.2);
-    declare_parameter("bug_leave_progress_m",            0.5);   // must improve goal distance
-    declare_parameter("bug_leave_heading_rad",           0.40);  // must face goal roughly
-    declare_parameter("bug_leave_front_clear_m",         1.6);   // front must be clear
-    declare_parameter("bug_leave_min_along_goal_m",      1.8);   // minimum bypass travel before leave
+    declare_parameter("bug_follow_speed_ms",             0.20);  // slightly slower for smoother avoidance
+    declare_parameter("bug_wall_target_dist_m",          0.55);  // keep obstacle at this side distance
+    declare_parameter("bug_wall_kp",                     0.9);   // gentler wall-follow steering gain
+    declare_parameter("bug_wall_deadband_m",             0.07);  // no steering when error within ~7 cm
+    declare_parameter("bug_leave_progress_m",            0.30);  // modest improvement in goal distance
+    declare_parameter("bug_leave_heading_rad",           0.60);  // facing goal within ~34 deg
+    declare_parameter("bug_leave_front_clear_m",         1.0);   // front clear beyond hard block, below blocked
+    declare_parameter("bug_leave_min_along_goal_m",      0.70);  // ~0.7 m progress along goal direction
     declare_parameter("bug_min_follow_ticks",            12);    // avoid immediate leave/restart
     declare_parameter("bug_wall_lost_ticks",             5);     // require obstacle side lost
     declare_parameter("bug_turn_min_rad",                1.0);   // ~57 deg before following
@@ -107,6 +115,7 @@ public:
     follow_speed_        = get_parameter("bug_follow_speed_ms").as_double();
     wall_target_dist_    = get_parameter("bug_wall_target_dist_m").as_double();
     wall_kp_             = get_parameter("bug_wall_kp").as_double();
+    wall_deadband_m_     = get_parameter("bug_wall_deadband_m").as_double();
     leave_progress_m_    = get_parameter("bug_leave_progress_m").as_double();
     leave_heading_rad_   = get_parameter("bug_leave_heading_rad").as_double();
     leave_front_clear_m_ = get_parameter("bug_leave_front_clear_m").as_double();
@@ -116,6 +125,10 @@ public:
     turn_min_rad_        = get_parameter("bug_turn_min_rad").as_double();
     trigger_ticks_req_   = get_parameter("bug_trigger_ticks").as_int();
     blocked_ticks_req_   = get_parameter("bug_blocked_ticks").as_int();
+
+    debug_obstacle_cx_   = get_parameter("debug_obstacle_center_x").as_double();
+    debug_obstacle_cy_   = get_parameter("debug_obstacle_center_y").as_double();
+    debug_obstacle_radius_ = get_parameter("debug_obstacle_radius_m").as_double();
 
     loadWaypoints();
 
@@ -138,9 +151,19 @@ public:
     cmd_vel_pub_     = create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
     complete_client_ = create_client<std_srvs::srv::Trigger>("mission/complete");
 
+    waypoint_markers_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
+      "/mission/waypoints_markers", 1);
+    path_pub_ = create_publisher<nav_msgs::msg::Path>("/mission/path", 10);
+    path_msg_.header.frame_id = mission_frame_id_;
+
     control_timer_ = create_wall_timer(
       std::chrono::milliseconds(100),
       std::bind(&WaypointFollowerNode::controlLoop, this));
+    // Periodically republish waypoint and obstacle markers so RViz always shows them,
+    // even if started after this node.
+    viz_timer_ = create_wall_timer(
+      std::chrono::seconds(1),
+      std::bind(&WaypointFollowerNode::publishWaypointMarkers, this));
 
     RCLCPP_INFO(get_logger(),
       "Waypoint follower: %zu waypoints, tol=%.2f m, bug_trigger=%.2f m",
@@ -198,10 +221,14 @@ private:
       follow_turning_ = false;
       front_blocked_ticks_ = 0;
       blocked_ticks_ = 0;
-      right_lost_ticks_ = 0;
+      side_lost_ticks_ = 0;
     }
   }
-  void on_odom(const nav_msgs::msg::Odometry::SharedPtr msg)     { last_odom_ = msg; }
+  void on_odom(const nav_msgs::msg::Odometry::SharedPtr msg)
+  {
+    last_odom_ = msg;
+    publishPath(msg);
+  }
   void on_hazard_level(const std_msgs::msg::UInt8::SharedPtr msg){ hazard_level_ = msg->data; }
   void on_safety_stop(const std_msgs::msg::Bool::SharedPtr msg)  { safety_stop_ = msg->data; }
   void on_ultrasonic(const mower_msgs::msg::UltrasonicArray::SharedPtr msg)
@@ -238,16 +265,128 @@ private:
     return minFrontRange() < hard_block_dist_;
   }
 
-  bool rightWallValid() const
+  bool sideWallValid(bool follow_left_wall) const
   {
-    if (!last_ultrasonic_ || last_ultrasonic_->range_m.size() < 5u) return false;
-    return validRange(last_ultrasonic_->range_m[4]);  // keep obstacle on RIGHT while turning LEFT
+    if (!last_ultrasonic_) return false;
+    const auto & ranges = last_ultrasonic_->range_m;
+    if (ranges.size() < 5u) return false;
+    const size_t idx = follow_left_wall ? 3u : 4u;  // 3=left, 4=right
+    if (idx >= ranges.size()) return false;
+    return validRange(ranges[idx]);
   }
 
-  double rightWallRange() const
+  double sideWallRange(bool follow_left_wall) const
   {
-    if (!rightWallValid()) return std::numeric_limits<double>::infinity();
-    return static_cast<double>(last_ultrasonic_->range_m[4]);
+    if (!sideWallValid(follow_left_wall)) return std::numeric_limits<double>::infinity();
+    const auto & ranges = last_ultrasonic_->range_m;
+    const size_t idx = follow_left_wall ? 3u : 4u;
+    return static_cast<double>(ranges[idx]);
+  }
+
+  // ── Visualization helpers ─────────────────────────────────────────────────────
+
+  void publishWaypointMarkers()
+  {
+    if (!waypoint_markers_pub_ || waypoints_.empty()) {
+      return;
+    }
+    visualization_msgs::msg::MarkerArray array;
+    const auto now = get_clock()->now();
+
+    // Clear all previous markers in this namespace.
+    visualization_msgs::msg::Marker clear;
+    clear.header.frame_id = mission_frame_id_;
+    clear.header.stamp = now;
+    clear.ns = "waypoints";
+    clear.id = 0;
+    clear.action = visualization_msgs::msg::Marker::DELETEALL;
+    array.markers.push_back(clear);
+
+    // Spheres + text labels for each waypoint.
+    for (size_t i = 0; i + 1u < waypoints_.size(); i += 2u) {
+      const double wx = waypoints_[i];
+      const double wy = waypoints_[i + 1u];
+      const int idx = static_cast<int>(i / 2u);
+
+      visualization_msgs::msg::Marker m;
+      m.header.frame_id = mission_frame_id_;
+      m.header.stamp = now;
+      m.ns = "waypoints";
+      m.id = idx;
+      m.type = visualization_msgs::msg::Marker::SPHERE;
+      m.action = visualization_msgs::msg::Marker::ADD;
+      m.pose.position.x = wx;
+      m.pose.position.y = wy;
+      m.pose.position.z = 0.0;
+      m.scale.x = 0.3;
+      m.scale.y = 0.3;
+      m.scale.z = 0.3;
+      m.color.r = 0.0f;
+      m.color.g = 0.6f;
+      m.color.b = 1.0f;
+      m.color.a = 0.9f;
+      array.markers.push_back(m);
+
+      visualization_msgs::msg::Marker label = m;
+      label.id = 1000 + idx;
+      label.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+      label.text = std::to_string(idx);
+      label.pose.position.z = 0.6;
+      label.scale.x = 0.0;
+      label.scale.y = 0.0;
+      label.scale.z = 0.4;
+      label.color.r = 1.0f;
+      label.color.g = 1.0f;
+      label.color.b = 1.0f;
+      label.color.a = 1.0f;
+      array.markers.push_back(label);
+    }
+
+    // Optional debug obstacle visualization (e.g., virtual 1x1 m box).
+    if (debug_obstacle_radius_ > 0.0) {
+      visualization_msgs::msg::Marker obs;
+      obs.header.frame_id = mission_frame_id_;
+      obs.header.stamp = now;
+      obs.ns = "debug_obstacle";
+      obs.id = 0;
+      obs.type = visualization_msgs::msg::Marker::CUBE;
+      obs.action = visualization_msgs::msg::Marker::ADD;
+      obs.pose.position.x = debug_obstacle_cx_;
+      obs.pose.position.y = debug_obstacle_cy_;
+      obs.pose.position.z = 0.25;
+      obs.scale.x = debug_obstacle_radius_ * 2.0;
+      obs.scale.y = debug_obstacle_radius_ * 2.0;
+      obs.scale.z = 0.5;
+      obs.color.r = 1.0f;
+      obs.color.g = 0.1f;
+      obs.color.b = 0.1f;
+      obs.color.a = 0.7f;
+      array.markers.push_back(obs);
+    }
+
+    waypoint_markers_pub_->publish(array);
+  }
+
+  void publishPath(const nav_msgs::msg::Odometry::SharedPtr & msg)
+  {
+    if (!path_pub_) {
+      return;
+    }
+    if (msg->header.frame_id != mission_frame_id_) {
+      return;
+    }
+
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header = msg->header;
+    pose.pose = msg->pose.pose;
+
+    if (path_msg_.header.frame_id.empty()) {
+      path_msg_.header.frame_id = mission_frame_id_;
+    }
+    path_msg_.header.stamp = msg->header.stamp;
+    path_msg_.poses.push_back(pose);
+
+    path_pub_->publish(path_msg_);
   }
 
   // ── Normal waypoint heading ──────────────────────────────────────────────────
@@ -286,9 +425,29 @@ private:
       hit_goal_dir_x_ = std::cos(yaw);
       hit_goal_dir_y_ = std::sin(yaw);
     }
-    saw_right_wall_ = false;
+
+    // Choose which side to follow based on front-left vs front-right clearance.
+    follow_left_wall_ = false;  // default: keep wall on right
+    if (last_ultrasonic_ && last_ultrasonic_->range_m.size() >= 3u) {
+      const auto & ranges = last_ultrasonic_->range_m;
+      const float fl = ranges[0];  // front_left
+      const float fr = ranges[2];  // front_right
+      const bool fl_valid = validRange(fl);
+      const bool fr_valid = validRange(fr);
+      if (fl_valid && !fr_valid) {
+        follow_left_wall_ = true;
+      } else if (!fl_valid && fr_valid) {
+        follow_left_wall_ = false;
+      } else if (fl_valid && fr_valid) {
+        // Follow the side with MORE clearance so the chosen side is the one
+        // we drive around on (clearer corridor), not the more obstructed side.
+        follow_left_wall_ = (fl > fr);
+      }
+    }
+
+    saw_side_wall_ = false;
     follow_ticks_ = 0;
-    right_lost_ticks_ = 0;
+    side_lost_ticks_ = 0;
     blocked_ticks_ = 0;
     RCLCPP_INFO(get_logger(),
       "BUG FOLLOW START pos=(%.2f,%.2f) yaw=%.2f hit_goal_dist=%.2f",
@@ -297,32 +456,34 @@ private:
 
   void runFollowObstacle(geometry_msgs::msg::Twist & cmd, double x, double y, double yaw, double gx, double gy)
   {
-    const bool right_valid = rightWallValid();
+    const bool side_valid = sideWallValid(follow_left_wall_);
     const bool front_caution = isFrontCaution();
     const bool front_blocked = isFrontHardBlocked();
 
     follow_ticks_++;
 
-    if (right_valid) {
-      saw_right_wall_ = true;
-      right_lost_ticks_ = 0;
+    if (side_valid) {
+      saw_side_wall_ = true;
+      side_lost_ticks_ = 0;
     } else {
-      right_lost_ticks_++;
+      side_lost_ticks_++;
     }
 
     if (follow_turning_) {
       const double turned = std::fabs(wrapAngle(yaw - follow_start_yaw_));
       if (turned >= turn_min_rad_ && !front_blocked) {
         follow_turning_ = false;
-        RCLCPP_INFO(get_logger(), "BUG FOLLOW EDGE LOCK pos=(%.2f,%.2f)", x, y);
+        RCLCPP_INFO(get_logger(), "BUG FOLLOW EDGE LOCK pos=(%.2f,%.2f) side=%s", x, y,
+          follow_left_wall_ ? "LEFT" : "RIGHT");
       } else {
-        cmd.angular.z = max_angular_speed_ * 0.9;  // keep turning left
+        const double turn_sign = follow_left_wall_ ? -1.0 : 1.0;  // left-wall: turn right, right-wall: turn left
+        cmd.angular.z = turn_sign * max_angular_speed_ * 0.9;
         cmd.linear.x = 0.0;
         return;
       }
     }
 
-    if (front_blocked && !right_valid) {
+    if (front_blocked && !side_valid) {
       blocked_ticks_++;
     } else {
       blocked_ticks_ = 0;
@@ -333,43 +494,61 @@ private:
       return;
     }
 
-    // Wall follow with obstacle on right.
+    // Wall follow with obstacle on chosen side.
     cmd.linear.x = follow_speed_;
-    if (right_valid) {
-      const double r = rightWallRange();
+    if (side_valid) {
+      const double r = sideWallRange(follow_left_wall_);
       const double err = wall_target_dist_ - r; // positive when too close
+      // Deadband: avoid twitchy steering when error is very small.
+      double steer = 0.0;
+      if (std::fabs(err) > wall_deadband_m_) {
+        steer = wall_kp_ * err;
+        if (follow_left_wall_) {
+          steer = -steer;  // mirror control when wall is on left
+        }
+      }
       cmd.angular.z = std::max(-max_angular_speed_,
-                        std::min(max_angular_speed_, wall_kp_ * err));
+                        std::min(max_angular_speed_, steer));
     } else {
-      // User intent: keep turning LEFT until right sensor sees the obstacle.
-      if (!saw_right_wall_) {
+      // Keep turning until side sensor acquires the obstacle. When we've
+      // already seen the wall once, make this correction gentle so brief
+      // dropouts don't cause strong left-right hunting.
+      if (!saw_side_wall_) {
         cmd.linear.x = std::min(follow_speed_, 0.12);
-        cmd.angular.z = std::min(max_angular_speed_, 0.6);
+        const double turn_sign = follow_left_wall_ ? -1.0 : 1.0;
+        cmd.angular.z = turn_sign * std::min(max_angular_speed_, 0.5);
       } else {
-        // After we've seen the wall and then lost it, bias gently right to continue around.
-        cmd.angular.z = -0.25;
+        // Gentle bias back toward the wall with reduced gain.
+        const double bias = 0.12;
+        cmd.angular.z = follow_left_wall_ ? bias : -bias;
       }
     }
 
-    // Leave obstacle follow only after genuinely passing the obstacle side and re-facing goal.
+    // Leave obstacle follow once we are roughly re-oriented toward the goal and the
+    // front path is clear. Progress check is intentionally relaxed so we don't
+    // orbit compact obstacles forever.
     const double goal_dist = std::hypot(gx - x, gy - y);
     const double goal_yaw = std::atan2(gy - y, gx - x);
     const double goal_err = wrapAngle(goal_yaw - yaw);
-    const bool progressed = goal_dist < (hit_goal_dist_ - leave_progress_m_);
+    // Treat "acceptable" progress as being no farther than a small margin from
+    // the hit distance, or closer. This avoids requiring strict improvement in
+    // goal distance, which can fail for small circular obstacles.
+    const bool progressed = goal_dist <= (hit_goal_dist_ + leave_progress_m_);
     const bool facing_goal = std::fabs(goal_err) < leave_heading_rad_;
     const bool front_clear = minFrontRange() > leave_front_clear_m_;
-    const bool side_lost = saw_right_wall_ && (right_lost_ticks_ >= wall_lost_ticks_req_);
-    const double along_goal = (x - hit_x_) * hit_goal_dir_x_ + (y - hit_y_) * hit_goal_dir_y_;
-    const bool enough_bypass_progress = along_goal >= leave_min_along_goal_m_;
     const bool followed_long_enough = follow_ticks_ >= min_follow_ticks_;
 
-    if (followed_long_enough && progressed && facing_goal && front_clear && side_lost && enough_bypass_progress) {
+    // Relaxed leave condition: do not require losing the side wall or strong
+    // progress along the goal ray; rely on heading + front clearance instead.
+    const bool leave_ok = followed_long_enough && progressed && facing_goal && front_clear;
+
+    if (leave_ok) {
       nav_state_ = NavState::GO_TO_GOAL;
       follow_turning_ = false;
       front_blocked_ticks_ = 0;
       RCLCPP_INFO(get_logger(),
-        "BUG FOLLOW COMPLETE pos=(%.2f,%.2f) goal_dist=%.2f along=%.2f",
-        x, y, goal_dist, along_goal);
+        "BUG FOLLOW COMPLETE pos=(%.2f,%.2f) goal_dist=%.2f hit_goal_dist=%.2f side=%s",
+        x, y, goal_dist, hit_goal_dist_, follow_left_wall_ ? "LEFT" : "RIGHT");
     } else if (front_caution) {
       // Keep following as long as obstacle remains relevant.
       (void)front_caution;
@@ -419,13 +598,20 @@ private:
 
     // ── Waypoint reached ──────────────────────────────────────────────────────
     if (dist < waypoint_tolerance_) {
-      RCLCPP_INFO(get_logger(), "Reached WP %zu (%.2f,%.2f)", idx, gx, gy);
+      RCLCPP_INFO(get_logger(),
+        "WP_REACHED idx=%zu/%zu pose=(%.6f,%.6f,yaw=%.6f) "
+        "goal=(%.6f,%.6f) dist=%.6f tol=%.6f state=%s",
+        idx, waypoints_.size() / 2u,
+        x, y, yaw,
+        gx, gy, dist, waypoint_tolerance_,
+        (nav_state_ == NavState::GO_TO_GOAL ? "GO_TO_GOAL" :
+          (nav_state_ == NavState::FOLLOW_OBSTACLE ? "FOLLOW_OBSTACLE" : "BLOCKED_STOP")));
       current_waypoint_index_++;
       nav_state_ = NavState::GO_TO_GOAL;
       follow_turning_ = false;
       front_blocked_ticks_ = 0;
       blocked_ticks_ = 0;
-      right_lost_ticks_ = 0;
+      side_lost_ticks_ = 0;
       if (current_waypoint_index_ * 2u + 1u >= waypoints_.size() && !complete_sent_) {
         RCLCPP_INFO(get_logger(), "All waypoints reached – calling mission/complete");
         complete_sent_ = true;
@@ -507,6 +693,9 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr           cmd_vel_pub_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr                 complete_client_;
   rclcpp::TimerBase::SharedPtr                                      control_timer_;
+  rclcpp::TimerBase::SharedPtr                                      viz_timer_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr waypoint_markers_pub_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr                  path_pub_;
 
   bool     mission_running_;
   size_t   current_waypoint_index_;
@@ -528,6 +717,7 @@ private:
   double     follow_speed_;
   double     wall_target_dist_;
   double     wall_kp_;
+  double     wall_deadband_m_;
   double     leave_progress_m_;
   double     leave_heading_rad_;
   double     leave_front_clear_m_;
@@ -538,23 +728,29 @@ private:
   int        trigger_ticks_req_;
   int        blocked_ticks_req_;
 
+  double     debug_obstacle_cx_;
+  double     debug_obstacle_cy_;
+  double     debug_obstacle_radius_;
+
   // Bug state
   NavState   nav_state_;
   bool       follow_turning_;
+  bool       follow_left_wall_;
   double     follow_start_yaw_;
   double     hit_goal_dist_;
   double     hit_x_;
   double     hit_y_;
   double     hit_goal_dir_x_;
   double     hit_goal_dir_y_;
-  bool       saw_right_wall_;
+  bool       saw_side_wall_;
   int        follow_ticks_;
-  int        right_lost_ticks_;
+  int        side_lost_ticks_;
   int        front_blocked_ticks_;
   int        blocked_ticks_;
 
   nav_msgs::msg::Odometry::SharedPtr            last_odom_;
   mower_msgs::msg::UltrasonicArray::SharedPtr   last_ultrasonic_;
+  nav_msgs::msg::Path                           path_msg_;
 };
 
 int main(int argc, char** argv)

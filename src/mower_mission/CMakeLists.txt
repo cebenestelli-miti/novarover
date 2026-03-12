@@ -12,6 +12,7 @@ find_package(std_srvs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 add_library(mission_loader SHARED src/mission_loader.cpp)
 ament_target_dependencies(mission_loader rclcpp)
@@ -24,7 +25,15 @@ ament_target_dependencies(mission_manager_node rclcpp mower_msgs std_srvs nav_ms
 add_executable(waypoint_follower_node src/waypoint_follower_node.cpp)
 target_link_libraries(waypoint_follower_node mission_loader)
 target_include_directories(waypoint_follower_node PRIVATE include)
-ament_target_dependencies(waypoint_follower_node rclcpp mower_msgs std_srvs geometry_msgs nav_msgs std_msgs)
+ament_target_dependencies(waypoint_follower_node
+  rclcpp
+  mower_msgs
+  std_srvs
+  geometry_msgs
+  nav_msgs
+  std_msgs
+  visualization_msgs
+)
 
 install(TARGETS mission_loader mission_manager_node waypoint_follower_node
   DESTINATION lib/${PROJECT_NAME})
