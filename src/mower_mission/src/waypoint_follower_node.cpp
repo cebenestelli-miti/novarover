@@ -89,6 +89,8 @@ public:
     best_along_goal_(0.0),
     prev_front_range_(std::numeric_limits<double>::infinity()),
     front_decreasing_ticks_(0),
+    drive_along_bad_progress_ticks_(0),
+    follow_bad_global_ticks_(0),
     rejoin_x_(0.0),
     rejoin_y_(0.0),
     have_rejoin_pose_(false)
@@ -148,9 +150,14 @@ public:
     declare_parameter("bug_drive_along_pressure_w_max",   0.35); // max extra angular from front pressure
     declare_parameter("bug_drive_along_decreasing_ticks", 2);    // ticks of decreasing front needed for tight behavior
     declare_parameter("bug_drive_along_min_speed_ms",     0.10); // minimum forward speed when front is tight
+    declare_parameter("bug_drive_along_bad_ticks",        25);   // ticks of bad progress before forcing recovery
     declare_parameter("bug_cooldown_rejoin_radius_m",   0.80);  // cooldown only blocks within this radius of rejoin point
     declare_parameter("bug_cooldown_override_front_m",  1.10);  // if front gets this close during cooldown, override
     declare_parameter("bug_cooldown_caution_speed_ms",  0.18);  // conservative speed when cooldown active + front caution
+    // Global progress guard: prevent huge looping/doubling back around obstacles.
+    declare_parameter("bug_follow_max_goal_increase_m",  3.0);   // max extra distance from hit to goal before treating as bad
+    declare_parameter("bug_follow_max_backtrack_m",      1.0);   // max allowed backtrack behind hit point along goal dir
+    declare_parameter("bug_follow_bad_global_ticks",     60);    // ticks of bad global geometry before forcing BLOCKED_STOP
 
     waypoint_tolerance_  = get_parameter("waypoint_tolerance_m").as_double();
     max_linear_speed_    = get_parameter("max_linear_speed").as_double();
@@ -195,6 +202,10 @@ public:
     drive_along_pressure_w_max_ = get_parameter("bug_drive_along_pressure_w_max").as_double();
     drive_along_decreasing_ticks_ = get_parameter("bug_drive_along_decreasing_ticks").as_int();
     drive_along_min_speed_ = get_parameter("bug_drive_along_min_speed_ms").as_double();
+    drive_along_bad_ticks_ = get_parameter("bug_drive_along_bad_ticks").as_int();
+    follow_max_goal_increase_m_ = get_parameter("bug_follow_max_goal_increase_m").as_double();
+    follow_max_backtrack_m_ = get_parameter("bug_follow_max_backtrack_m").as_double();
+    follow_bad_global_ticks_param_ = get_parameter("bug_follow_bad_global_ticks").as_int();
     cooldown_rejoin_radius_m_ = get_parameter("bug_cooldown_rejoin_radius_m").as_double();
     cooldown_override_front_m_ = get_parameter("bug_cooldown_override_front_m").as_double();
     cooldown_caution_speed_ = get_parameter("bug_cooldown_caution_speed_ms").as_double();
@@ -533,6 +544,7 @@ private:
     best_along_goal_ = 0.0;
     prev_front_range_ = std::numeric_limits<double>::infinity();
     front_decreasing_ticks_ = 0;
+    follow_bad_global_ticks_ = 0;
     RCLCPP_INFO(get_logger(),
       "BUG FOLLOW START pos=(%.2f,%.2f) yaw=%.2f hit_goal_dist=%.2f side=%s (TURN_AWAY then DRIVE_ALONG)",
       x, y, yaw, hit_goal_dist_, follow_left_wall_ ? "LEFT" : "RIGHT");
@@ -644,6 +656,27 @@ private:
       return;
     }
 
+    // Global bad-geometry guard: prevent huge looping / doubling back.
+    // Conditions:
+    //  - goal_dist has grown well beyond the distance at hit point (long way around)
+    //  - OR we have significantly backtracked behind the hit point along goal direction.
+    const bool goal_far_from_hit = goal_dist > (hit_goal_dist_ + follow_max_goal_increase_m_);
+    const bool backtracked_past_hit = along_goal_m < -follow_max_backtrack_m_;
+    if (goal_far_from_hit || backtracked_past_hit) {
+      follow_bad_global_ticks_++;
+    } else {
+      follow_bad_global_ticks_ = 0;
+    }
+    if (follow_bad_global_ticks_ >= follow_bad_global_ticks_param_) {
+      nav_state_ = NavState::BLOCKED_STOP;
+      RCLCPP_WARN(get_logger(),
+        "BUG FOLLOW BLOCKED_STOP (bad global progress) pos=(%.2f,%.2f) hit_goal_dist=%.2f goal_dist=%.2f along_goal=%.2f",
+        x, y, hit_goal_dist_, goal_dist, along_goal_m);
+      cmd.linear.x = 0.0;
+      cmd.angular.z = 0.0;
+      return;
+    }
+
     // ── BLOCKED_STOP: front blocked and no side reading for too long ───────────
     if (front_blocked && !side_valid) {
       blocked_ticks_++;
@@ -690,6 +723,12 @@ private:
 
     const bool side_near_max = side_valid && (side_range_m >= side_wall_max_valid_m_);
     const bool side_useful = side_valid && !side_near_max;
+    // Track loss of side edge while in FOLLOW_OBSTACLE.
+    if (side_useful) {
+      side_lost_ticks_ = 0;
+    } else {
+      side_lost_ticks_++;
+    }
 
     if (side_useful) {
       saw_side_wall_ = true;
@@ -704,6 +743,7 @@ private:
         if (steer_toward_obstacle) w = 0.0;
       }
     } else {
+      // No useful side edge: gentle bias, plus potential controlled rejoin toward waypoint.
       w = (follow_left_wall_ ? 1.0 : -1.0) * alongside_angular_bias_;
     }
 
@@ -725,6 +765,54 @@ private:
         cmd.linear.x = 0.0;
         w = away_sign * std::max(std::fabs(w), 0.25);
       }
+    }
+
+    // Controlled rejoin test: if we have lost the side edge for a while, treat this as
+    // "maybe past obstacle" and bias slightly back toward the waypoint direction, but
+    // only when front is comfortably clear and we have real bypass progress.
+    const bool front_shrinking = (front_decreasing_ticks_ >= drive_along_decreasing_ticks_);
+    if (!side_useful && side_lost_ticks_ >= wall_lost_ticks_req_
+        && passed_obstacle && front_comfy_long_enough) {
+      // Small rejoin steering back toward the waypoint heading.
+      const double rejoin_w = std::max(-0.25, std::min(0.25, goal_err * 0.4));
+      w += rejoin_w;
+      // If front starts collapsing again while testing rejoin, cancel and rely on obstacle behavior.
+      if (front_shrinking || !front_clear) {
+        // Reset side_lost so we don't keep rejoining; next time we see side edge, normal avoidance resumes.
+        side_lost_ticks_ = 0;
+      }
+    }
+
+    // Detect bad progress / looping while still in DRIVE_ALONG:
+    // - along_goal regressing (moving back along goal direction)
+    // - distance to goal increasing
+    // - front shrinking
+    // - heading error large
+    // - side sensor not useful
+    const bool along_regress = (best_along_goal_ > 0.3 && along_goal_m < best_along_goal_ - 0.08);
+    const bool goal_increasing = (goal_dist > best_goal_dist_ + 0.08);
+    const bool heading_bad = std::fabs(goal_err) > 1.0;  // ~57 deg away from goal
+    const bool side_not_useful = !side_useful;
+    if (along_regress && goal_increasing && front_shrinking && heading_bad && side_not_useful) {
+      drive_along_bad_progress_ticks_++;
+    } else {
+      drive_along_bad_progress_ticks_ = 0;
+    }
+    if (drive_along_bad_progress_ticks_ >= drive_along_bad_ticks_) {
+      // Strong clearance recovery: stay in FOLLOW_OBSTACLE, same side, but go back to TURN_AWAY.
+      follow_phase_ = FollowPhase::TURN_AWAY;
+      follow_start_yaw_ = yaw;
+      break_away_ticks_ = 0;
+      best_along_goal_ = along_goal_m;
+      best_goal_dist_ = goal_dist;
+      drive_along_bad_progress_ticks_ = 0;
+      RCLCPP_WARN(get_logger(),
+        "BUG DRIVE_ALONG bad progress -> TURN_AWAY (along=%.2f best_along=%.2f goal=%.2f best_goal=%.2f front=%.2f side_r=%.2f)",
+        along_goal_m, best_along_goal_, goal_dist, best_goal_dist_, front_range, side_range_m);
+      // Apply an immediate strong turn-away this tick as well.
+      const double away_sign = follow_left_wall_ ? -1.0 : 1.0;
+      cmd.linear.x = 0.0;
+      cmd.angular.z = away_sign * std::max(std::fabs(cmd.angular.z), 0.35);
     }
 
     cmd.angular.z = std::max(-alongside_max_angular_, std::min(alongside_max_angular_, w));
@@ -964,6 +1052,10 @@ private:
   double     drive_along_pressure_w_max_;
   int        drive_along_decreasing_ticks_;
   double     drive_along_min_speed_;
+  int        drive_along_bad_ticks_;
+  double     follow_max_goal_increase_m_;
+  double     follow_max_backtrack_m_;
+  int        follow_bad_global_ticks_param_;
   double     cooldown_rejoin_radius_m_;
   double     cooldown_override_front_m_;
   double     cooldown_caution_speed_;
@@ -997,8 +1089,10 @@ private:
   int        follow_cooldown_ticks_;  // in GO_TO_GOAL: decrement; blocks re-entry when > 0
   int        break_away_ticks_;       // ticks spent in TURN_AWAY (capped)
   double     best_along_goal_;        // best along_goal so far (detect looping)
+  int        drive_along_bad_progress_ticks_;
   double     prev_front_range_;
   int        front_decreasing_ticks_;
+  int        follow_bad_global_ticks_;
   double     rejoin_x_;
   double     rejoin_y_;
   bool       have_rejoin_pose_;
