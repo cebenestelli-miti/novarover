@@ -3,11 +3,14 @@
  *
  * States:
  *   - GO_TO_GOAL
- *   - FOLLOW_OBSTACLE
+ *   - FOLLOW_OBSTACLE (sub-phases: TURN_AWAY -> DRIVE_ALONG)
  *   - BLOCKED_STOP
  *
- * The node only publishes nominal /cmd_vel requests and always yields to /safety/stop.
- * Existing ultrasonic_guard + safety_manager behavior remains unchanged.
+ * FOLLOW_OBSTACLE: detect obstacle, choose side once, TURN_AWAY until side edge is acquired,
+ * then DRIVE_ALONG (drive forward with gentle side correction). Rejoin when past
+ * obstacle (along-goal progress + front clear + facing goal). No continuous arc/looping.
+ *
+ * The node only publishes nominal /cmd_vel and always yields to /safety/stop.
  */
 
 #include <rclcpp/rclcpp.hpp>
@@ -46,6 +49,9 @@ static double wrapAngle(double a)
 
 enum class NavState { GO_TO_GOAL, FOLLOW_OBSTACLE, BLOCKED_STOP };
 
+// FOLLOW_OBSTACLE sub-phases: turn away until side edge is acquired, then drive forward alongside.
+enum class FollowPhase { TURN_AWAY, DRIVE_ALONG };
+
 class WaypointFollowerNode : public rclcpp::Node
 {
 public:
@@ -58,7 +64,7 @@ public:
     safety_stop_(false),
     hazard_level_(0),
     nav_state_(NavState::GO_TO_GOAL),
-    follow_turning_(false),
+    follow_phase_(FollowPhase::DRIVE_ALONG),
     follow_left_wall_(false),
     follow_start_yaw_(0.0),
     hit_goal_dist_(0.0),
@@ -70,7 +76,16 @@ public:
     follow_ticks_(0),
     side_lost_ticks_(0),
     front_blocked_ticks_(0),
-    blocked_ticks_(0)
+    blocked_ticks_(0),
+    last_wall_steer_(0.0),
+    best_goal_dist_(0.0),
+    no_progress_ticks_(0),
+    total_rotation_rad_(0.0),
+    side_far_ticks_(0),
+    front_clear_ticks_(0),
+    follow_cooldown_ticks_(0),
+    break_away_ticks_(0),
+    best_along_goal_(0.0)
   {
     declare_parameter("waypoint_tolerance_m",       0.2);
     declare_parameter("max_linear_speed",           0.5);
@@ -91,9 +106,11 @@ public:
     declare_parameter("bug_trigger_dist_m",              2.0);   // enter BUG when in ultrasonic CAUTION
     declare_parameter("bug_hard_block_dist_m",           0.45);  // too close in front
     declare_parameter("bug_follow_speed_ms",             0.20);  // slightly slower for smoother avoidance
-    declare_parameter("bug_wall_target_dist_m",          0.55);  // keep obstacle at this side distance
-    declare_parameter("bug_wall_kp",                     0.9);   // gentler wall-follow steering gain
-    declare_parameter("bug_wall_deadband_m",             0.07);  // no steering when error within ~7 cm
+    declare_parameter("bug_wall_target_dist_m",          0.75);  // desired side offset; more space = smoother arc
+    declare_parameter("bug_wall_kp",                     0.55);  // low gain to reduce left-right oscillation
+    declare_parameter("bug_wall_deadband_m",             0.12);  // no steering when error within +/-12 cm
+    declare_parameter("bug_wall_steer_smoothing",        0.3);   // blend with previous steer for smooth path
+    declare_parameter("bug_wall_max_angular_z",         0.5);   // clamp wall-follow angular command
     declare_parameter("bug_leave_progress_m",            0.30);  // modest improvement in goal distance
     declare_parameter("bug_leave_heading_rad",           0.60);  // facing goal within ~34 deg
     declare_parameter("bug_leave_front_clear_m",         1.0);   // front clear beyond hard block, below blocked
@@ -103,6 +120,21 @@ public:
     declare_parameter("bug_turn_min_rad",                1.0);   // ~57 deg before following
     declare_parameter("bug_trigger_ticks",               2);
     declare_parameter("bug_blocked_ticks",               15);    // 1.5s at 100ms
+    declare_parameter("bug_follow_max_rotation_rad",     12.0);  // ~2 full circles; force exit if exceeded
+    declare_parameter("bug_follow_no_progress_ticks",    80);    // 8 s at 100ms; allow recovery leave
+    // Committed arc bypass: do not use side when pegged at max; fixed turn bias; cooldown after leave
+    declare_parameter("bug_side_wall_max_valid_m",       1.5);   // side reading >= this = no useful wall
+    declare_parameter("bug_side_far_ticks_req",         3);     // cycles at/above max_valid -> arc mode
+    declare_parameter("bug_arc_angular_z",               0.35);  // fixed turn rate in arc-bypass mode
+    declare_parameter("bug_follow_cooldown_ticks",       50);    // ticks after leave before re-entry allowed
+    declare_parameter("bug_leave_front_clear_ticks",    5);     // front clear for this many ticks to leave
+    // Simplified bypass: short break-away then alongside (come alongside, no looping).
+    declare_parameter("bug_break_away_rad",              0.45); // heading change to end break-away (~26 deg)
+    declare_parameter("bug_break_away_max_ticks",        20);    // max ticks in break-away (~2 s)
+    declare_parameter("bug_alongside_angular_bias",       0.06);  // very small turn in bypass direction
+    declare_parameter("bug_alongside_max_angular",      0.12); // cap steering in alongside (gentle)
+    declare_parameter("bug_leave_side_clear_m",         1.2);   // rejoin when side sensor sees obstacle this far (past it)
+    declare_parameter("bug_edge_detect_max_m",          1.1);   // in TURN_AWAY: consider side edge acquired when <= this
 
     waypoint_tolerance_  = get_parameter("waypoint_tolerance_m").as_double();
     max_linear_speed_    = get_parameter("max_linear_speed").as_double();
@@ -116,6 +148,8 @@ public:
     wall_target_dist_    = get_parameter("bug_wall_target_dist_m").as_double();
     wall_kp_             = get_parameter("bug_wall_kp").as_double();
     wall_deadband_m_     = get_parameter("bug_wall_deadband_m").as_double();
+    wall_steer_smoothing_ = get_parameter("bug_wall_steer_smoothing").as_double();
+    wall_max_angular_z_  = get_parameter("bug_wall_max_angular_z").as_double();
     leave_progress_m_    = get_parameter("bug_leave_progress_m").as_double();
     leave_heading_rad_   = get_parameter("bug_leave_heading_rad").as_double();
     leave_front_clear_m_ = get_parameter("bug_leave_front_clear_m").as_double();
@@ -125,6 +159,19 @@ public:
     turn_min_rad_        = get_parameter("bug_turn_min_rad").as_double();
     trigger_ticks_req_   = get_parameter("bug_trigger_ticks").as_int();
     blocked_ticks_req_   = get_parameter("bug_blocked_ticks").as_int();
+    follow_max_rotation_rad_ = get_parameter("bug_follow_max_rotation_rad").as_double();
+    follow_no_progress_ticks_ = get_parameter("bug_follow_no_progress_ticks").as_int();
+    side_wall_max_valid_m_   = get_parameter("bug_side_wall_max_valid_m").as_double();
+    side_far_ticks_req_      = get_parameter("bug_side_far_ticks_req").as_int();
+    arc_angular_z_           = get_parameter("bug_arc_angular_z").as_double();
+    follow_cooldown_ticks_param_ = get_parameter("bug_follow_cooldown_ticks").as_int();
+    leave_front_clear_ticks_ = get_parameter("bug_leave_front_clear_ticks").as_int();
+    break_away_rad_         = get_parameter("bug_break_away_rad").as_double();
+    break_away_max_ticks_   = get_parameter("bug_break_away_max_ticks").as_int();
+    alongside_angular_bias_  = get_parameter("bug_alongside_angular_bias").as_double();
+    alongside_max_angular_  = get_parameter("bug_alongside_max_angular").as_double();
+    leave_side_clear_m_     = get_parameter("bug_leave_side_clear_m").as_double();
+    edge_detect_max_m_      = get_parameter("bug_edge_detect_max_m").as_double();
 
     debug_obstacle_cx_   = get_parameter("debug_obstacle_center_x").as_double();
     debug_obstacle_cy_   = get_parameter("debug_obstacle_center_y").as_double();
@@ -159,15 +206,12 @@ public:
     control_timer_ = create_wall_timer(
       std::chrono::milliseconds(100),
       std::bind(&WaypointFollowerNode::controlLoop, this));
-    // Periodically republish waypoint and obstacle markers so RViz always shows them,
-    // even if started after this node.
-    viz_timer_ = create_wall_timer(
-      std::chrono::seconds(1),
-      std::bind(&WaypointFollowerNode::publishWaypointMarkers, this));
 
     RCLCPP_INFO(get_logger(),
       "Waypoint follower: %zu waypoints, tol=%.2f m, bug_trigger=%.2f m",
       waypoints_.size() / 2u, waypoint_tolerance_, trigger_dist_);
+
+    publishWaypointMarkers();
   }
 
 private:
@@ -218,7 +262,7 @@ private:
       current_waypoint_index_ = 0;
       complete_sent_ = false;
       nav_state_ = NavState::GO_TO_GOAL;
-      follow_turning_ = false;
+      follow_phase_ = FollowPhase::DRIVE_ALONG;
       front_blocked_ticks_ = 0;
       blocked_ticks_ = 0;
       side_lost_ticks_ = 0;
@@ -410,7 +454,7 @@ private:
   void startFollowObstacle(double x, double y, double yaw, double gx, double gy)
   {
     nav_state_ = NavState::FOLLOW_OBSTACLE;
-    follow_turning_ = true;
+    follow_phase_ = FollowPhase::TURN_AWAY;
     follow_start_yaw_ = yaw;
     hit_goal_dist_ = std::hypot(gx - x, gy - y);
     hit_x_ = x;
@@ -426,8 +470,10 @@ private:
       hit_goal_dir_y_ = std::sin(yaw);
     }
 
-    // Choose which side to follow based on front-left vs front-right clearance.
-    follow_left_wall_ = false;  // default: keep wall on right
+    // Choose turn-away direction from front clearance, then keep obstacle on the opposite side.
+    // If left is clearer, we turn left and keep obstacle on RIGHT (follow_left_wall_=false).
+    // If right is clearer, we turn right and keep obstacle on LEFT (follow_left_wall_=true).
+    follow_left_wall_ = false;  // default: obstacle on right
     if (last_ultrasonic_ && last_ultrasonic_->range_m.size() >= 3u) {
       const auto & ranges = last_ultrasonic_->range_m;
       const float fl = ranges[0];  // front_left
@@ -435,13 +481,14 @@ private:
       const bool fl_valid = validRange(fl);
       const bool fr_valid = validRange(fr);
       if (fl_valid && !fr_valid) {
-        follow_left_wall_ = true;
-      } else if (!fl_valid && fr_valid) {
+        // Right unknown/invalid -> treat right as worse -> turn left -> obstacle on right.
         follow_left_wall_ = false;
+      } else if (!fl_valid && fr_valid) {
+        // Left unknown/invalid -> treat left as worse -> turn right -> obstacle on left.
+        follow_left_wall_ = true;
       } else if (fl_valid && fr_valid) {
-        // Follow the side with MORE clearance so the chosen side is the one
-        // we drive around on (clearer corridor), not the more obstructed side.
-        follow_left_wall_ = (fl > fr);
+        // Turn toward the clearer side; obstacle stays on the other side.
+        follow_left_wall_ = (fr > fl);
       }
     }
 
@@ -449,40 +496,102 @@ private:
     follow_ticks_ = 0;
     side_lost_ticks_ = 0;
     blocked_ticks_ = 0;
+    last_wall_steer_ = 0.0;  // reset steering memory when entering FOLLOW_OBSTACLE
+    best_goal_dist_ = hit_goal_dist_;
+    no_progress_ticks_ = 0;
+    total_rotation_rad_ = 0.0;
+    side_far_ticks_ = 0;
+    front_clear_ticks_ = 0;
+    break_away_ticks_ = 0;
+    best_along_goal_ = 0.0;
     RCLCPP_INFO(get_logger(),
-      "BUG FOLLOW START pos=(%.2f,%.2f) yaw=%.2f hit_goal_dist=%.2f",
-      x, y, yaw, hit_goal_dist_);
+      "BUG FOLLOW START pos=(%.2f,%.2f) yaw=%.2f hit_goal_dist=%.2f side=%s (TURN_AWAY then DRIVE_ALONG)",
+      x, y, yaw, hit_goal_dist_, follow_left_wall_ ? "LEFT" : "RIGHT");
   }
 
   void runFollowObstacle(geometry_msgs::msg::Twist & cmd, double x, double y, double yaw, double gx, double gy)
   {
-    const bool side_valid = sideWallValid(follow_left_wall_);
-    const bool front_caution = isFrontCaution();
     const bool front_blocked = isFrontHardBlocked();
+    const double front_range = minFrontRange();
+    const bool front_clear = front_range > leave_front_clear_m_;
+    if (front_clear) {
+      front_clear_ticks_++;
+    } else {
+      front_clear_ticks_ = 0;
+    }
+
+    const bool side_valid = sideWallValid(follow_left_wall_);
+    const double side_range_m = side_valid ? sideWallRange(follow_left_wall_) : 0.0;
 
     follow_ticks_++;
 
-    if (side_valid) {
-      saw_side_wall_ = true;
-      side_lost_ticks_ = 0;
+    const double goal_dist = std::hypot(gx - x, gy - y);
+    if (goal_dist < best_goal_dist_) {
+      best_goal_dist_ = goal_dist;
+      no_progress_ticks_ = 0;
     } else {
-      side_lost_ticks_++;
+      no_progress_ticks_++;
     }
 
-    if (follow_turning_) {
-      const double turned = std::fabs(wrapAngle(yaw - follow_start_yaw_));
-      if (turned >= turn_min_rad_ && !front_blocked) {
-        follow_turning_ = false;
-        RCLCPP_INFO(get_logger(), "BUG FOLLOW EDGE LOCK pos=(%.2f,%.2f) side=%s", x, y,
-          follow_left_wall_ ? "LEFT" : "RIGHT");
-      } else {
-        const double turn_sign = follow_left_wall_ ? -1.0 : 1.0;  // left-wall: turn right, right-wall: turn left
-        cmd.angular.z = turn_sign * max_angular_speed_ * 0.9;
-        cmd.linear.x = 0.0;
-        return;
-      }
+    const double goal_yaw = std::atan2(gy - y, gx - x);
+    const double goal_err = wrapAngle(goal_yaw - yaw);
+    const bool facing_goal = std::fabs(goal_err) < leave_heading_rad_;
+    const bool followed_long_enough = follow_ticks_ >= min_follow_ticks_;
+    const bool progressed = goal_dist <= (hit_goal_dist_ + leave_progress_m_);
+    const double along_goal_m = (x - hit_x_) * hit_goal_dir_x_ + (y - hit_y_) * hit_goal_dir_y_;
+    const bool passed_obstacle = along_goal_m >= leave_min_along_goal_m_;
+    const bool front_clear_long_enough = front_clear_ticks_ >= leave_front_clear_ticks_;
+
+    // Prevent looping: track along-goal progress (used for diagnostics; leave requires passed_obstacle).
+    if (along_goal_m > best_along_goal_) {
+      best_along_goal_ = along_goal_m;
     }
 
+    // ── Leave conditions (rejoin waypoint path) ─────────────────────────────────
+    // Do not rejoin early: require real bypass progress + acceptable heading + front clear.
+    const bool leave_ok = followed_long_enough && passed_obstacle && progressed && facing_goal && front_clear && front_clear_long_enough;
+    if (leave_ok) {
+      follow_cooldown_ticks_ = follow_cooldown_ticks_param_;
+      nav_state_ = NavState::GO_TO_GOAL;
+      follow_phase_ = FollowPhase::DRIVE_ALONG;
+      front_blocked_ticks_ = 0;
+      RCLCPP_INFO(get_logger(),
+        "BUG FOLLOW COMPLETE (rejoin) passed_along=%.2fm pos=(%.2f,%.2f) side=%s — cooldown set",
+        along_goal_m, x, y, follow_left_wall_ ? "LEFT" : "RIGHT");
+      cmd.linear.x = follow_speed_;
+      cmd.angular.z = 0.0;
+      return;
+    }
+
+    const bool progress_recovery = no_progress_ticks_ >= follow_no_progress_ticks_
+                                  && front_clear && front_clear_long_enough && facing_goal && passed_obstacle;
+    if (progress_recovery && followed_long_enough) {
+      follow_cooldown_ticks_ = follow_cooldown_ticks_param_;
+      nav_state_ = NavState::GO_TO_GOAL;
+      follow_phase_ = FollowPhase::DRIVE_ALONG;
+      front_blocked_ticks_ = 0;
+      RCLCPP_INFO(get_logger(),
+        "BUG FOLLOW COMPLETE (recovery) pos=(%.2f,%.2f) side=%s — cooldown set",
+        x, y, follow_left_wall_ ? "LEFT" : "RIGHT");
+      cmd.linear.x = follow_speed_;
+      cmd.angular.z = 0.0;
+      return;
+    }
+
+    if (total_rotation_rad_ > follow_max_rotation_rad_) {
+      follow_cooldown_ticks_ = follow_cooldown_ticks_param_;
+      nav_state_ = NavState::GO_TO_GOAL;
+      follow_phase_ = FollowPhase::DRIVE_ALONG;
+      front_blocked_ticks_ = 0;
+      RCLCPP_WARN(get_logger(),
+        "BUG FOLLOW EXIT (max rotation) pos=(%.2f,%.2f) side=%s — cooldown set",
+        x, y, follow_left_wall_ ? "LEFT" : "RIGHT");
+      cmd.linear.x = 0.0;
+      cmd.angular.z = 0.0;
+      return;
+    }
+
+    // ── BLOCKED_STOP: front blocked and no side reading for too long ───────────
     if (front_blocked && !side_valid) {
       blocked_ticks_++;
     } else {
@@ -490,69 +599,71 @@ private:
     }
     if (blocked_ticks_ >= blocked_ticks_req_) {
       nav_state_ = NavState::BLOCKED_STOP;
-      RCLCPP_WARN(get_logger(), "BUG BLOCKED_STOP entered at (%.2f,%.2f)", x, y);
+      RCLCPP_WARN(get_logger(), "BUG BLOCKED_STOP at (%.2f,%.2f)", x, y);
       return;
     }
 
-    // Wall follow with obstacle on chosen side.
-    cmd.linear.x = follow_speed_;
-    if (side_valid) {
-      const double r = sideWallRange(follow_left_wall_);
-      const double err = wall_target_dist_ - r; // positive when too close
-      // Deadband: avoid twitchy steering when error is very small.
-      double steer = 0.0;
-      if (std::fabs(err) > wall_deadband_m_) {
-        steer = wall_kp_ * err;
-        if (follow_left_wall_) {
-          steer = -steer;  // mirror control when wall is on left
-        }
-      }
-      cmd.angular.z = std::max(-max_angular_speed_,
-                        std::min(max_angular_speed_, steer));
-    } else {
-      // Keep turning until side sensor acquires the obstacle. When we've
-      // already seen the wall once, make this correction gentle so brief
-      // dropouts don't cause strong left-right hunting.
-      if (!saw_side_wall_) {
-        cmd.linear.x = std::min(follow_speed_, 0.12);
-        const double turn_sign = follow_left_wall_ ? -1.0 : 1.0;
-        cmd.angular.z = turn_sign * std::min(max_angular_speed_, 0.5);
+    // ── TURN_AWAY: turn away until the chosen side sensor acquires the obstacle edge ─
+    // Only rotate (no forward) until:
+    // - chosen side sensor sees a usable edge (not pegged at max and within edge_detect_max_m_), AND
+    // - front is no longer hard-blocked.
+    if (follow_phase_ == FollowPhase::TURN_AWAY) {
+      break_away_ticks_++;
+      const double turned = std::fabs(wrapAngle(yaw - follow_start_yaw_));
+      const bool timeout = break_away_ticks_ >= break_away_max_ticks_;
+      const bool side_near_max = side_valid && (side_range_m >= side_wall_max_valid_m_);
+      const bool side_edge_acquired = side_valid && !side_near_max && (side_range_m <= edge_detect_max_m_);
+      if ((side_edge_acquired && !front_blocked) || timeout) {
+        follow_phase_ = FollowPhase::DRIVE_ALONG;
+        RCLCPP_INFO(get_logger(),
+          "BUG TURN_AWAY -> DRIVE_ALONG (side_edge=%d side=%.2f front=%.2f turned=%.2f ticks=%d)",
+          side_edge_acquired ? 1 : 0, side_range_m, front_range, turned, break_away_ticks_);
       } else {
-        // Gentle bias back toward the wall with reduced gain.
-        const double bias = 0.12;
-        cmd.angular.z = follow_left_wall_ ? bias : -bias;
+        // Turn away from obstacle: obstacle on left -> turn right (negative), obstacle on right -> turn left (positive).
+        const double turn_sign = follow_left_wall_ ? -1.0 : 1.0;
+        cmd.linear.x = 0.0;
+        cmd.angular.z = turn_sign * std::min(max_angular_speed_ * 0.75, wall_max_angular_z_);
+        total_rotation_rad_ += std::fabs(cmd.angular.z) * 0.1;
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500,
+          "BUG TURN_AWAY side=%s turned=%.2f front=%.2f side_r=%.2f edge=%d",
+          follow_left_wall_ ? "L" : "R", turned, front_range, side_range_m, side_edge_acquired ? 1 : 0);
+        return;
       }
     }
 
-    // Leave obstacle follow once we are roughly re-oriented toward the goal and the
-    // front path is clear. Progress check is intentionally relaxed so we don't
-    // orbit compact obstacles forever.
-    const double goal_dist = std::hypot(gx - x, gy - y);
-    const double goal_yaw = std::atan2(gy - y, gx - x);
-    const double goal_err = wrapAngle(goal_yaw - yaw);
-    // Treat "acceptable" progress as being no farther than a small margin from
-    // the hit distance, or closer. This avoids requiring strict improvement in
-    // goal distance, which can fail for small circular obstacles.
-    const bool progressed = goal_dist <= (hit_goal_dist_ + leave_progress_m_);
-    const bool facing_goal = std::fabs(goal_err) < leave_heading_rad_;
-    const bool front_clear = minFrontRange() > leave_front_clear_m_;
-    const bool followed_long_enough = follow_ticks_ >= min_follow_ticks_;
+    // ── DRIVE_ALONG: drive forward, gentle side-distance correction only ───────
+    cmd.linear.x = follow_speed_;
+    double w = 0.0;
 
-    // Relaxed leave condition: do not require losing the side wall or strong
-    // progress along the goal ray; rely on heading + front clearance instead.
-    const bool leave_ok = followed_long_enough && progressed && facing_goal && front_clear;
+    const bool side_near_max = side_valid && (side_range_m >= side_wall_max_valid_m_);
+    const bool side_useful = side_valid && !side_near_max;
 
-    if (leave_ok) {
-      nav_state_ = NavState::GO_TO_GOAL;
-      follow_turning_ = false;
-      front_blocked_ticks_ = 0;
-      RCLCPP_INFO(get_logger(),
-        "BUG FOLLOW COMPLETE pos=(%.2f,%.2f) goal_dist=%.2f hit_goal_dist=%.2f side=%s",
-        x, y, goal_dist, hit_goal_dist_, follow_left_wall_ ? "LEFT" : "RIGHT");
-    } else if (front_caution) {
-      // Keep following as long as obstacle remains relevant.
-      (void)front_caution;
+    if (side_useful) {
+      saw_side_wall_ = true;
+      const double err = side_range_m - wall_target_dist_;
+      if (std::fabs(err) > wall_deadband_m_) {
+        const double raw = wall_kp_ * 0.25 * err;  // very gentle correction (mower-friendly)
+        const double side_sign = follow_left_wall_ ? 1.0 : -1.0;
+        w = side_sign * raw;
+      }
+      if (front_range < leave_front_clear_m_) {
+        const bool steer_toward_obstacle = (follow_left_wall_ && w > 0.0) || (!follow_left_wall_ && w < 0.0);
+        if (steer_toward_obstacle) w = 0.0;
+      }
+    } else {
+      w = (follow_left_wall_ ? 1.0 : -1.0) * alongside_angular_bias_;
     }
+
+    cmd.angular.z = std::max(-alongside_max_angular_, std::min(alongside_max_angular_, w));
+    if (front_range < leave_front_clear_m_ * 0.5) {
+      cmd.linear.x = std::min(cmd.linear.x, 0.12);
+    }
+
+    total_rotation_rad_ += std::fabs(cmd.angular.z) * 0.1;
+
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500,
+      "BUG DRIVE_ALONG side=%s front=%.2f side_r=%.2f along_goal=%.2f w=%.3f",
+      follow_left_wall_ ? "L" : "R", front_range, side_range_m, along_goal_m, cmd.angular.z);
   }
 
   // ── Main control loop ────────────────────────────────────────────────────────
@@ -580,7 +691,7 @@ private:
     // ── Hard safety stop ──────────────────────────────────────────────────────
     if (safety_stop_) {
       nav_state_ = NavState::GO_TO_GOAL;
-      follow_turning_ = false;
+      follow_phase_ = FollowPhase::DRIVE_ALONG;
       cmd_vel_pub_->publish(cmd);
       return;
     }
@@ -608,7 +719,7 @@ private:
           (nav_state_ == NavState::FOLLOW_OBSTACLE ? "FOLLOW_OBSTACLE" : "BLOCKED_STOP")));
       current_waypoint_index_++;
       nav_state_ = NavState::GO_TO_GOAL;
-      follow_turning_ = false;
+      follow_phase_ = FollowPhase::DRIVE_ALONG;
       front_blocked_ticks_ = 0;
       blocked_ticks_ = 0;
       side_lost_ticks_ = 0;
@@ -623,13 +734,22 @@ private:
 
     // ── Navigation state machine ──────────────────────────────────────────────
     if (nav_state_ == NavState::GO_TO_GOAL) {
+      if (follow_cooldown_ticks_ > 0) {
+        follow_cooldown_ticks_--;
+      }
       const bool hazard_caution_or_worse = hazard_level_ >= 1u;
       if (hazard_caution_or_worse && isFrontCaution()) {
         front_blocked_ticks_++;
       } else {
         front_blocked_ticks_ = 0;
       }
-      if (front_blocked_ticks_ >= trigger_ticks_req_) {
+      const bool would_trigger = (front_blocked_ticks_ >= trigger_ticks_req_);
+      if (would_trigger && follow_cooldown_ticks_ > 0) {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+          "BUG cooldown prevent re-entry (cooldown_ticks=%d) — front caution but waiting",
+          follow_cooldown_ticks_);
+        headToWaypoint(cmd, x, y, yaw, gx, gy, dist);
+      } else if (would_trigger && follow_cooldown_ticks_ == 0) {
         front_blocked_ticks_ = 0;
         startFollowObstacle(x, y, yaw, gx, gy);
         runFollowObstacle(cmd, x, y, yaw, gx, gy);
@@ -643,10 +763,12 @@ private:
       cmd.angular.z = 0.0;
       if (!isFrontHardBlocked()) {
         nav_state_ = NavState::FOLLOW_OBSTACLE;
-        follow_turning_ = true;
+        follow_phase_ = FollowPhase::TURN_AWAY;
         follow_start_yaw_ = yaw;
         blocked_ticks_ = 0;
-        RCLCPP_INFO(get_logger(), "BUG BLOCKED_STOP -> FOLLOW_OBSTACLE");
+        break_away_ticks_ = 0;
+        best_along_goal_ = 0.0;
+        RCLCPP_INFO(get_logger(), "BUG BLOCKED_STOP -> FOLLOW_OBSTACLE (TURN_AWAY)");
       }
     }
 
@@ -693,7 +815,6 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr           cmd_vel_pub_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr                 complete_client_;
   rclcpp::TimerBase::SharedPtr                                      control_timer_;
-  rclcpp::TimerBase::SharedPtr                                      viz_timer_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr waypoint_markers_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr                  path_pub_;
 
@@ -718,6 +839,8 @@ private:
   double     wall_target_dist_;
   double     wall_kp_;
   double     wall_deadband_m_;
+  double     wall_steer_smoothing_;
+  double     wall_max_angular_z_;
   double     leave_progress_m_;
   double     leave_heading_rad_;
   double     leave_front_clear_m_;
@@ -727,6 +850,19 @@ private:
   double     turn_min_rad_;
   int        trigger_ticks_req_;
   int        blocked_ticks_req_;
+  double     follow_max_rotation_rad_;
+  int        follow_no_progress_ticks_;
+  double     side_wall_max_valid_m_;
+  int        side_far_ticks_req_;
+  double     arc_angular_z_;
+  int        follow_cooldown_ticks_param_;
+  int        leave_front_clear_ticks_;
+  double     break_away_rad_;
+  int        break_away_max_ticks_;
+  double     alongside_angular_bias_;
+  double     alongside_max_angular_;
+  double     leave_side_clear_m_;
+  double     edge_detect_max_m_;
 
   double     debug_obstacle_cx_;
   double     debug_obstacle_cy_;
@@ -734,7 +870,7 @@ private:
 
   // Bug state
   NavState   nav_state_;
-  bool       follow_turning_;
+  FollowPhase follow_phase_;   // TURN_AWAY -> DRIVE_ALONG
   bool       follow_left_wall_;
   double     follow_start_yaw_;
   double     hit_goal_dist_;
@@ -747,6 +883,15 @@ private:
   int        side_lost_ticks_;
   int        front_blocked_ticks_;
   int        blocked_ticks_;
+  double     last_wall_steer_;  // for steering smoothing during wall follow
+  double     best_goal_dist_;   // best distance to goal since entering FOLLOW_OBSTACLE
+  int        no_progress_ticks_;  // ticks without improving best_goal_dist_
+  double     total_rotation_rad_; // integrated |angular.z| to cap circular lock
+  int        side_far_ticks_;     // cycles side at/above max_valid -> arc bypass mode
+  int        front_clear_ticks_;  // consecutive ticks with front clear (for leave)
+  int        follow_cooldown_ticks_;  // in GO_TO_GOAL: decrement; blocks re-entry when > 0
+  int        break_away_ticks_;       // ticks spent in TURN_AWAY (capped)
+  double     best_along_goal_;        // best along_goal so far (detect looping)
 
   nav_msgs::msg::Odometry::SharedPtr            last_odom_;
   mower_msgs::msg::UltrasonicArray::SharedPtr   last_ultrasonic_;
