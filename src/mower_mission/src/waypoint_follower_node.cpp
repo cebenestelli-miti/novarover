@@ -83,9 +83,15 @@ public:
     total_rotation_rad_(0.0),
     side_far_ticks_(0),
     front_clear_ticks_(0),
+    front_comfy_ticks_(0),
     follow_cooldown_ticks_(0),
     break_away_ticks_(0),
-    best_along_goal_(0.0)
+    best_along_goal_(0.0),
+    prev_front_range_(std::numeric_limits<double>::infinity()),
+    front_decreasing_ticks_(0),
+    rejoin_x_(0.0),
+    rejoin_y_(0.0),
+    have_rejoin_pose_(false)
   {
     declare_parameter("waypoint_tolerance_m",       0.2);
     declare_parameter("max_linear_speed",           0.5);
@@ -128,6 +134,8 @@ public:
     declare_parameter("bug_arc_angular_z",               0.35);  // fixed turn rate in arc-bypass mode
     declare_parameter("bug_follow_cooldown_ticks",       50);    // ticks after leave before re-entry allowed
     declare_parameter("bug_leave_front_clear_ticks",    5);     // front clear for this many ticks to leave
+    declare_parameter("bug_leave_front_comfy_m",        1.4);   // comfortably clear front required to leave
+    declare_parameter("bug_leave_front_comfy_ticks",    8);     // consecutive comfy ticks required to leave
     // Simplified bypass: short break-away then alongside (come alongside, no looping).
     declare_parameter("bug_break_away_rad",              0.45); // heading change to end break-away (~26 deg)
     declare_parameter("bug_break_away_max_ticks",        20);    // max ticks in break-away (~2 s)
@@ -135,6 +143,14 @@ public:
     declare_parameter("bug_alongside_max_angular",      0.12); // cap steering in alongside (gentle)
     declare_parameter("bug_leave_side_clear_m",         1.2);   // rejoin when side sensor sees obstacle this far (past it)
     declare_parameter("bug_edge_detect_max_m",          1.1);   // in TURN_AWAY: consider side edge acquired when <= this
+    declare_parameter("bug_drive_along_front_pressure_m", 0.95); // below this, add turn-away pressure in DRIVE_ALONG
+    declare_parameter("bug_drive_along_front_tight_m",    0.65); // below this, slow harder / stop-turn if decreasing
+    declare_parameter("bug_drive_along_pressure_w_max",   0.35); // max extra angular from front pressure
+    declare_parameter("bug_drive_along_decreasing_ticks", 2);    // ticks of decreasing front needed for tight behavior
+    declare_parameter("bug_drive_along_min_speed_ms",     0.10); // minimum forward speed when front is tight
+    declare_parameter("bug_cooldown_rejoin_radius_m",   0.80);  // cooldown only blocks within this radius of rejoin point
+    declare_parameter("bug_cooldown_override_front_m",  1.10);  // if front gets this close during cooldown, override
+    declare_parameter("bug_cooldown_caution_speed_ms",  0.18);  // conservative speed when cooldown active + front caution
 
     waypoint_tolerance_  = get_parameter("waypoint_tolerance_m").as_double();
     max_linear_speed_    = get_parameter("max_linear_speed").as_double();
@@ -166,12 +182,22 @@ public:
     arc_angular_z_           = get_parameter("bug_arc_angular_z").as_double();
     follow_cooldown_ticks_param_ = get_parameter("bug_follow_cooldown_ticks").as_int();
     leave_front_clear_ticks_ = get_parameter("bug_leave_front_clear_ticks").as_int();
+    leave_front_comfy_m_ = get_parameter("bug_leave_front_comfy_m").as_double();
+    leave_front_comfy_ticks_ = get_parameter("bug_leave_front_comfy_ticks").as_int();
     break_away_rad_         = get_parameter("bug_break_away_rad").as_double();
     break_away_max_ticks_   = get_parameter("bug_break_away_max_ticks").as_int();
     alongside_angular_bias_  = get_parameter("bug_alongside_angular_bias").as_double();
     alongside_max_angular_  = get_parameter("bug_alongside_max_angular").as_double();
     leave_side_clear_m_     = get_parameter("bug_leave_side_clear_m").as_double();
     edge_detect_max_m_      = get_parameter("bug_edge_detect_max_m").as_double();
+    drive_along_front_pressure_m_ = get_parameter("bug_drive_along_front_pressure_m").as_double();
+    drive_along_front_tight_m_ = get_parameter("bug_drive_along_front_tight_m").as_double();
+    drive_along_pressure_w_max_ = get_parameter("bug_drive_along_pressure_w_max").as_double();
+    drive_along_decreasing_ticks_ = get_parameter("bug_drive_along_decreasing_ticks").as_int();
+    drive_along_min_speed_ = get_parameter("bug_drive_along_min_speed_ms").as_double();
+    cooldown_rejoin_radius_m_ = get_parameter("bug_cooldown_rejoin_radius_m").as_double();
+    cooldown_override_front_m_ = get_parameter("bug_cooldown_override_front_m").as_double();
+    cooldown_caution_speed_ = get_parameter("bug_cooldown_caution_speed_ms").as_double();
 
     debug_obstacle_cx_   = get_parameter("debug_obstacle_center_x").as_double();
     debug_obstacle_cy_   = get_parameter("debug_obstacle_center_y").as_double();
@@ -502,8 +528,11 @@ private:
     total_rotation_rad_ = 0.0;
     side_far_ticks_ = 0;
     front_clear_ticks_ = 0;
+    front_comfy_ticks_ = 0;
     break_away_ticks_ = 0;
     best_along_goal_ = 0.0;
+    prev_front_range_ = std::numeric_limits<double>::infinity();
+    front_decreasing_ticks_ = 0;
     RCLCPP_INFO(get_logger(),
       "BUG FOLLOW START pos=(%.2f,%.2f) yaw=%.2f hit_goal_dist=%.2f side=%s (TURN_AWAY then DRIVE_ALONG)",
       x, y, yaw, hit_goal_dist_, follow_left_wall_ ? "LEFT" : "RIGHT");
@@ -519,6 +548,20 @@ private:
     } else {
       front_clear_ticks_ = 0;
     }
+    const bool front_comfy = front_range > leave_front_comfy_m_;
+    if (front_comfy) {
+      front_comfy_ticks_++;
+    } else {
+      front_comfy_ticks_ = 0;
+    }
+
+    // Track whether the front is actively collapsing.
+    if (std::isfinite(front_range) && std::isfinite(prev_front_range_) && (front_range < prev_front_range_ - 0.01)) {
+      front_decreasing_ticks_++;
+    } else {
+      front_decreasing_ticks_ = 0;
+    }
+    prev_front_range_ = front_range;
 
     const bool side_valid = sideWallValid(follow_left_wall_);
     const double side_range_m = side_valid ? sideWallRange(follow_left_wall_) : 0.0;
@@ -541,6 +584,7 @@ private:
     const double along_goal_m = (x - hit_x_) * hit_goal_dir_x_ + (y - hit_y_) * hit_goal_dir_y_;
     const bool passed_obstacle = along_goal_m >= leave_min_along_goal_m_;
     const bool front_clear_long_enough = front_clear_ticks_ >= leave_front_clear_ticks_;
+    const bool front_comfy_long_enough = front_comfy_ticks_ >= leave_front_comfy_ticks_;
 
     // Prevent looping: track along-goal progress (used for diagnostics; leave requires passed_obstacle).
     if (along_goal_m > best_along_goal_) {
@@ -549,9 +593,12 @@ private:
 
     // ── Leave conditions (rejoin waypoint path) ─────────────────────────────────
     // Do not rejoin early: require real bypass progress + acceptable heading + front clear.
-    const bool leave_ok = followed_long_enough && passed_obstacle && progressed && facing_goal && front_clear && front_clear_long_enough;
+    const bool leave_ok = followed_long_enough && passed_obstacle && progressed && facing_goal && front_clear && front_clear_long_enough && front_comfy_long_enough;
     if (leave_ok) {
       follow_cooldown_ticks_ = follow_cooldown_ticks_param_;
+      rejoin_x_ = x;
+      rejoin_y_ = y;
+      have_rejoin_pose_ = true;
       nav_state_ = NavState::GO_TO_GOAL;
       follow_phase_ = FollowPhase::DRIVE_ALONG;
       front_blocked_ticks_ = 0;
@@ -567,6 +614,9 @@ private:
                                   && front_clear && front_clear_long_enough && facing_goal && passed_obstacle;
     if (progress_recovery && followed_long_enough) {
       follow_cooldown_ticks_ = follow_cooldown_ticks_param_;
+      rejoin_x_ = x;
+      rejoin_y_ = y;
+      have_rejoin_pose_ = true;
       nav_state_ = NavState::GO_TO_GOAL;
       follow_phase_ = FollowPhase::DRIVE_ALONG;
       front_blocked_ticks_ = 0;
@@ -580,6 +630,9 @@ private:
 
     if (total_rotation_rad_ > follow_max_rotation_rad_) {
       follow_cooldown_ticks_ = follow_cooldown_ticks_param_;
+      rejoin_x_ = x;
+      rejoin_y_ = y;
+      have_rejoin_pose_ = true;
       nav_state_ = NavState::GO_TO_GOAL;
       follow_phase_ = FollowPhase::DRIVE_ALONG;
       front_blocked_ticks_ = 0;
@@ -654,6 +707,26 @@ private:
       w = (follow_left_wall_ ? 1.0 : -1.0) * alongside_angular_bias_;
     }
 
+    // Front pressure override: if front starts getting tight during DRIVE_ALONG, immediately veer away more.
+    // Obstacle on left -> veer right (negative), obstacle on right -> veer left (positive).
+    if (std::isfinite(front_range) && front_range < drive_along_front_pressure_m_) {
+      const double away_sign = follow_left_wall_ ? -1.0 : 1.0;
+      const double t = std::max(0.0, std::min(1.0, (drive_along_front_pressure_m_ - front_range) / std::max(1e-3, drive_along_front_pressure_m_)));
+      const double extra_w = away_sign * (t * drive_along_pressure_w_max_);
+      w += extra_w;
+    }
+
+    // If front is very tight and still decreasing, slow aggressively; optionally stop-and-turn before safety stop.
+    if (std::isfinite(front_range) && front_range < drive_along_front_tight_m_
+        && front_decreasing_ticks_ >= drive_along_decreasing_ticks_) {
+      cmd.linear.x = std::min(cmd.linear.x, drive_along_min_speed_);
+      if (front_range < hard_block_dist_ * 1.05) {
+        const double away_sign = follow_left_wall_ ? -1.0 : 1.0;
+        cmd.linear.x = 0.0;
+        w = away_sign * std::max(std::fabs(w), 0.25);
+      }
+    }
+
     cmd.angular.z = std::max(-alongside_max_angular_, std::min(alongside_max_angular_, w));
     if (front_range < leave_front_clear_m_ * 0.5) {
       cmd.linear.x = std::min(cmd.linear.x, 0.12);
@@ -662,8 +735,8 @@ private:
     total_rotation_rad_ += std::fabs(cmd.angular.z) * 0.1;
 
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 500,
-      "BUG DRIVE_ALONG side=%s front=%.2f side_r=%.2f along_goal=%.2f w=%.3f",
-      follow_left_wall_ ? "L" : "R", front_range, side_range_m, along_goal_m, cmd.angular.z);
+      "BUG DRIVE_ALONG side=%s front=%.2f dec_ticks=%d side_r=%.2f along_goal=%.2f v=%.2f w=%.3f",
+      follow_left_wall_ ? "L" : "R", front_range, front_decreasing_ticks_, side_range_m, along_goal_m, cmd.linear.x, cmd.angular.z);
   }
 
   // ── Main control loop ────────────────────────────────────────────────────────
@@ -744,17 +817,38 @@ private:
         front_blocked_ticks_ = 0;
       }
       const bool would_trigger = (front_blocked_ticks_ >= trigger_ticks_req_);
-      if (would_trigger && follow_cooldown_ticks_ > 0) {
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
-          "BUG cooldown prevent re-entry (cooldown_ticks=%d) — front caution but waiting",
-          follow_cooldown_ticks_);
-        headToWaypoint(cmd, x, y, yaw, gx, gy, dist);
-      } else if (would_trigger && follow_cooldown_ticks_ == 0) {
+      const double front_range = minFrontRange();
+      const bool front_caution = isFrontCaution();
+      const bool front_strong = std::isfinite(front_range) && (front_range < cooldown_override_front_m_);
+      double dist_from_rejoin = 0.0;
+      if (have_rejoin_pose_) {
+        dist_from_rejoin = std::hypot(x - rejoin_x_, y - rejoin_y_);
+      }
+      const bool moved_far_from_rejoin = have_rejoin_pose_ && (dist_from_rejoin >= cooldown_rejoin_radius_m_);
+      const bool cooldown_override = (follow_cooldown_ticks_ > 0) && (front_strong || moved_far_from_rejoin);
+
+      if (would_trigger && (follow_cooldown_ticks_ == 0 || cooldown_override)) {
+        if (cooldown_override) {
+          RCLCPP_INFO(get_logger(),
+            "BUG cooldown override: %s%s (cooldown_ticks=%d front=%.2f dist_from_rejoin=%.2f)",
+            front_strong ? "front_strong " : "",
+            moved_far_from_rejoin ? "moved_far" : "",
+            follow_cooldown_ticks_, front_range, dist_from_rejoin);
+        }
         front_blocked_ticks_ = 0;
         startFollowObstacle(x, y, yaw, gx, gy);
         runFollowObstacle(cmd, x, y, yaw, gx, gy);
       } else {
+        if (would_trigger && follow_cooldown_ticks_ > 0) {
+          RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+            "BUG cooldown prevent re-entry (cooldown_ticks=%d dist_from_rejoin=%.2f front=%.2f) — waiting",
+            follow_cooldown_ticks_, dist_from_rejoin, front_range);
+        }
         headToWaypoint(cmd, x, y, yaw, gx, gy, dist);
+        // Conservative behavior during cooldown if front caution exists: do not cruise into a visible obstacle.
+        if (follow_cooldown_ticks_ > 0 && front_caution) {
+          cmd.linear.x = std::min(cmd.linear.x, cooldown_caution_speed_);
+        }
       }
     } else if (nav_state_ == NavState::FOLLOW_OBSTACLE) {
       runFollowObstacle(cmd, x, y, yaw, gx, gy);
@@ -857,12 +951,22 @@ private:
   double     arc_angular_z_;
   int        follow_cooldown_ticks_param_;
   int        leave_front_clear_ticks_;
+  double     leave_front_comfy_m_;
+  int        leave_front_comfy_ticks_;
   double     break_away_rad_;
   int        break_away_max_ticks_;
   double     alongside_angular_bias_;
   double     alongside_max_angular_;
   double     leave_side_clear_m_;
   double     edge_detect_max_m_;
+  double     drive_along_front_pressure_m_;
+  double     drive_along_front_tight_m_;
+  double     drive_along_pressure_w_max_;
+  int        drive_along_decreasing_ticks_;
+  double     drive_along_min_speed_;
+  double     cooldown_rejoin_radius_m_;
+  double     cooldown_override_front_m_;
+  double     cooldown_caution_speed_;
 
   double     debug_obstacle_cx_;
   double     debug_obstacle_cy_;
@@ -889,9 +993,15 @@ private:
   double     total_rotation_rad_; // integrated |angular.z| to cap circular lock
   int        side_far_ticks_;     // cycles side at/above max_valid -> arc bypass mode
   int        front_clear_ticks_;  // consecutive ticks with front clear (for leave)
+  int        front_comfy_ticks_;  // consecutive ticks with comfortably clear front (for leave)
   int        follow_cooldown_ticks_;  // in GO_TO_GOAL: decrement; blocks re-entry when > 0
   int        break_away_ticks_;       // ticks spent in TURN_AWAY (capped)
   double     best_along_goal_;        // best along_goal so far (detect looping)
+  double     prev_front_range_;
+  int        front_decreasing_ticks_;
+  double     rejoin_x_;
+  double     rejoin_y_;
+  bool       have_rejoin_pose_;
 
   nav_msgs::msg::Odometry::SharedPtr            last_odom_;
   mower_msgs::msg::UltrasonicArray::SharedPtr   last_ultrasonic_;

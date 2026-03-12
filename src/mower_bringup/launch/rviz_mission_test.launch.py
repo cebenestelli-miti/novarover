@@ -79,6 +79,10 @@ def generate_launch_description():
                         "virtual_obstacle_center_x": 5.0,
                         "virtual_obstacle_center_y": 0.0,
                         "virtual_obstacle_radius_m": 0.5,
+                        # Second virtual obstacle 1.5 m further ahead
+                        "virtual_obstacle2_center_x": 6.5,
+                        "virtual_obstacle2_center_y": 1.0,
+                        "virtual_obstacle2_radius_m": 0.5,
                         "publish_ultrasonic": LaunchConfiguration("publish_ultrasonic"),
                         "publish_odom": LaunchConfiguration("mock_publish_odom"),
                     }

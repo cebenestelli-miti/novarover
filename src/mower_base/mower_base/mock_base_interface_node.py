@@ -58,6 +58,10 @@ class MockBaseInterfaceNode(Node):
         self.declare_parameter('virtual_obstacle_center_x', 0.0)
         self.declare_parameter('virtual_obstacle_center_y', 0.0)
         self.declare_parameter('virtual_obstacle_radius_m', -1.0)
+        # Optional second virtual obstacle circle (used for RViz mission testing).
+        self.declare_parameter('virtual_obstacle2_center_x', 0.0)
+        self.declare_parameter('virtual_obstacle2_center_y', 0.0)
+        self.declare_parameter('virtual_obstacle2_radius_m', -1.0)
         self.declare_parameter('odom_frame_id', 'odom')
         self.declare_parameter('base_frame_id', 'base_link')
         self.declare_parameter('publish_ultrasonic', True)
@@ -79,6 +83,9 @@ class MockBaseInterfaceNode(Node):
         self.virtual_obstacle_cx = float(self.get_parameter('virtual_obstacle_center_x').value)
         self.virtual_obstacle_cy = float(self.get_parameter('virtual_obstacle_center_y').value)
         self.virtual_obstacle_radius = float(self.get_parameter('virtual_obstacle_radius_m').value)
+        self.virtual_obstacle2_cx = float(self.get_parameter('virtual_obstacle2_center_x').value)
+        self.virtual_obstacle2_cy = float(self.get_parameter('virtual_obstacle2_center_y').value)
+        self.virtual_obstacle2_radius = float(self.get_parameter('virtual_obstacle2_radius_m').value)
 
         self.stop_asserted = False
         self.last_cmd_vel = Twist()
@@ -152,7 +159,7 @@ class MockBaseInterfaceNode(Node):
             ranges = [float(self.ultrasonic_clear)] * 6
             if self.simulate_obstacle_range_m > 0.0:
                 ranges[0] = ranges[1] = ranges[2] = float(self.simulate_obstacle_range_m)
-            elif self.virtual_obstacle_radius > 0.0:
+            elif self.virtual_obstacle_radius > 0.0 or self.virtual_obstacle2_radius > 0.0:
                 ranges = self._virtual_obstacle_ranges()
             ua = UltrasonicArray()
             ua.header.stamp = now
@@ -175,19 +182,37 @@ class MockBaseInterfaceNode(Node):
             wyaw = ryaw + lyaw
             dx = math.cos(wyaw)
             dy = math.sin(wyaw)
-            dist = _ray_circle_distance(
-                wx,
-                wy,
-                dx,
-                dy,
-                self.virtual_obstacle_cx,
-                self.virtual_obstacle_cy,
-                self.virtual_obstacle_radius,
-                self.ultrasonic_min,
-                self.ultrasonic_max,
-            )
-            if dist is not None:
-                ranges[i] = dist
+            best = None
+            if self.virtual_obstacle_radius > 0.0:
+                dist1 = _ray_circle_distance(
+                    wx,
+                    wy,
+                    dx,
+                    dy,
+                    self.virtual_obstacle_cx,
+                    self.virtual_obstacle_cy,
+                    self.virtual_obstacle_radius,
+                    self.ultrasonic_min,
+                    self.ultrasonic_max,
+                )
+                if dist1 is not None:
+                    best = dist1
+            if self.virtual_obstacle2_radius > 0.0:
+                dist2 = _ray_circle_distance(
+                    wx,
+                    wy,
+                    dx,
+                    dy,
+                    self.virtual_obstacle2_cx,
+                    self.virtual_obstacle2_cy,
+                    self.virtual_obstacle2_radius,
+                    self.ultrasonic_min,
+                    self.ultrasonic_max,
+                )
+                if dist2 is not None:
+                    best = dist2 if best is None else min(best, dist2)
+            if best is not None:
+                ranges[i] = best
         return ranges
 
     @staticmethod
