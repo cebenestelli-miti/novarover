@@ -948,6 +948,14 @@ private:
       const double front_range = minFrontRange();
       const bool front_caution = isFrontCaution();
       const bool front_strong = std::isfinite(front_range) && (front_range < cooldown_override_front_m_);
+      // BUG FOLLOW only starts when a usable side edge exists (avoids corridor false positives).
+      const bool side_left_valid = sideWallValid(true);
+      const bool side_right_valid = sideWallValid(false);
+      const double side_left_range = side_left_valid ? sideWallRange(true) : std::numeric_limits<double>::infinity();
+      const double side_right_range = side_right_valid ? sideWallRange(false) : std::numeric_limits<double>::infinity();
+      const bool side_edge_detected =
+        (side_left_valid && side_left_range < side_wall_max_valid_m_) ||
+        (side_right_valid && side_right_range < side_wall_max_valid_m_);
       double dist_from_rejoin = 0.0;
       if (have_rejoin_pose_) {
         dist_from_rejoin = std::hypot(x - rejoin_x_, y - rejoin_y_);
@@ -959,9 +967,13 @@ private:
       // only allow re-entry for a truly strong (hard-block) front obstacle.
       const bool near_goal_lockout = (dist < goal_lockout_dist_m_);
       const bool strong_obstacle_near_goal = isFrontHardBlocked();
-      const bool allow_reentry_normal = would_trigger && (follow_cooldown_ticks_ == 0 || cooldown_override);
+      const bool allow_reentry_normal = would_trigger && side_edge_detected && (follow_cooldown_ticks_ == 0 || cooldown_override);
       const bool allow_reentry = allow_reentry_normal && (!near_goal_lockout || strong_obstacle_near_goal);
 
+      if (would_trigger && !side_edge_detected) {
+        RCLCPP_INFO(get_logger(),
+          "Front caution but no side edge detected → staying GO_TO_GOAL");
+      }
       if (near_goal_lockout && allow_reentry_normal && !strong_obstacle_near_goal) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1500,
           "near-goal lockout: obstacle re-entry suppressed (final capture) dist=%.2f front=%.2f",

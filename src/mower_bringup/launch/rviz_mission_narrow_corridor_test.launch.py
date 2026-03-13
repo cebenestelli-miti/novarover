@@ -1,4 +1,4 @@
-"""RViz-only mission test: mock base + safety + mission + localization + RViz (no Gazebo)."""
+"""Narrow Corridor Test: RViz + mock base. Two obstacles form a corridor; robot (0,0) drives to (10,0)."""
 
 import os
 
@@ -29,17 +29,9 @@ def generate_launch_description():
                 description="If true, mock base publishes fake /ultrasonic/ranges.",
             ),
             DeclareLaunchArgument(
-                "simulate_obstacle_range_m",
-                default_value="-1.0",
-                description=(
-                    "Mock only: if > 0, front ultrasonics report this range (m) "
-                    "to test go-around (blocked-skip). -1 = off."
-                ),
-            ),
-            DeclareLaunchArgument(
                 "mission_file",
                 default_value=default_mission,
-                description="Path to .waypoints mission file used for RViz test.",
+                description="Path to .waypoints mission file (default: single waypoint 10,0).",
             ),
             DeclareLaunchArgument(
                 "farm_config",
@@ -49,7 +41,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "mission_frame_id",
                 default_value="odom",
-                description="Frame for mission/waypoints (odom or map). RViz fixed frame.",
+                description="Frame for mission/waypoints (odom). RViz fixed frame.",
             ),
             DeclareLaunchArgument(
                 "waypoint_tolerance_m",
@@ -61,7 +53,8 @@ def generate_launch_description():
                 default_value="true",
                 description="Mock base: set false when another source provides /odom/raw.",
             ),
-            # Mock base (simulated odometry + ultrasonics)
+            # Mock base: two obstacles forming an extra-wide corridor (1.0 m cube ≈ 0.5 m radius circle)
+            # Obstacle A: x=4.0, y=-2.0  |  Obstacle B: x=4.0, y=+2.0  →  corridor ~3.0 m wide
             Node(
                 package="mower_base",
                 executable="mock_base_interface_node",
@@ -72,26 +65,21 @@ def generate_launch_description():
                         "ultrasonic_clear_range_m": 2.0,
                         "ultrasonic_min_range_m": 0.02,
                         "ultrasonic_max_range_m": 4.0,
-                        "simulate_obstacle_range_m": LaunchConfiguration(
-                            "simulate_obstacle_range_m"
-                        ),
-                        # Three-obstacle straight-line test (0,0 -> 10,0):
-                        # 1: left offset, 2: right offset, 3: left offset again.
-                        "virtual_obstacle_center_x": 3.0,
-                        "virtual_obstacle_center_y": 0.7,
+                        "simulate_obstacle_range_m": -1.0,
+                        "virtual_obstacle_center_x": 4.0,
+                        "virtual_obstacle_center_y": -2.0,
                         "virtual_obstacle_radius_m": 0.5,
-                        "virtual_obstacle2_center_x": 6.0,
-                        "virtual_obstacle2_center_y": -0.7,
+                        "virtual_obstacle2_center_x": 4.0,
+                        "virtual_obstacle2_center_y": 2.0,
                         "virtual_obstacle2_radius_m": 0.5,
-                        "virtual_obstacle3_center_x": 8.5,
-                        "virtual_obstacle3_center_y": 0.7,
-                        "virtual_obstacle3_radius_m": 0.5,
+                        "virtual_obstacle3_center_x": 0.0,
+                        "virtual_obstacle3_center_y": 0.0,
+                        "virtual_obstacle3_radius_m": 0.0,
                         "publish_ultrasonic": LaunchConfiguration("publish_ultrasonic"),
                         "publish_odom": LaunchConfiguration("mock_publish_odom"),
                     }
                 ],
             ),
-            # Safety manager + ultrasonic guard
             Node(
                 package="ros_mower_core",
                 executable="safety_manager_node",
@@ -116,7 +104,6 @@ def generate_launch_description():
                     }
                 ],
             ),
-            # Mission manager + waypoint follower (publishes /cmd_vel)
             Node(
                 package="mower_mission",
                 executable="mission_manager_node",
@@ -139,23 +126,10 @@ def generate_launch_description():
                         "max_linear_speed": 0.5,
                         "mission_file": LaunchConfiguration("mission_file"),
                         "mission_frame_id": LaunchConfiguration("mission_frame_id"),
-                        "waypoint_tolerance_m": LaunchConfiguration(
-                            "waypoint_tolerance_m"
-                        ),
-                        # Match mock base three-obstacle layout (visible in RViz).
-                        "debug_obstacle_center_x": 3.0,
-                        "debug_obstacle_center_y": 0.7,
-                        "debug_obstacle_radius_m": 0.5,
-                        "debug_obstacle2_center_x": 6.0,
-                        "debug_obstacle2_center_y": -0.7,
-                        "debug_obstacle2_radius_m": 0.5,
-                        "debug_obstacle3_center_x": 8.5,
-                        "debug_obstacle3_center_y": 0.7,
-                        "debug_obstacle3_radius_m": 0.5,
+                        "waypoint_tolerance_m": LaunchConfiguration("waypoint_tolerance_m"),
                     },
                 ],
             ),
-            # Simple odom forward + TF odom->base_link
             Node(
                 package="mower_localization",
                 executable="localization_node",
@@ -167,7 +141,6 @@ def generate_launch_description():
                     }
                 ],
             ),
-            # RViz with mission visualization config
             Node(
                 package="rviz2",
                 executable="rviz2",
@@ -177,4 +150,3 @@ def generate_launch_description():
             ),
         ]
     )
-

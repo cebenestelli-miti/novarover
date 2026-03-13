@@ -63,6 +63,9 @@ class MockBaseInterfaceNode(Node):
         self.declare_parameter('virtual_obstacle2_center_x', 0.0)
         self.declare_parameter('virtual_obstacle2_center_y', 0.0)
         self.declare_parameter('virtual_obstacle2_radius_m', -1.0)
+        self.declare_parameter('virtual_obstacle3_center_x', 0.0)
+        self.declare_parameter('virtual_obstacle3_center_y', 0.0)
+        self.declare_parameter('virtual_obstacle3_radius_m', 0.0)
         self.declare_parameter('odom_frame_id', 'odom')
         self.declare_parameter('base_frame_id', 'base_link')
         self.declare_parameter('publish_ultrasonic', True)
@@ -89,20 +92,9 @@ class MockBaseInterfaceNode(Node):
         self.virtual_obstacle2_cx = float(self.get_parameter('virtual_obstacle2_center_x').value)
         self.virtual_obstacle2_cy = float(self.get_parameter('virtual_obstacle2_center_y').value)
         self.virtual_obstacle2_radius = float(self.get_parameter('virtual_obstacle2_radius_m').value)
-        # Three-obstacle straight-line test (0,0 -> 10,0):
-        # - Obstacle 1: left offset (matches virtual_obstacle_*)
-        # - Obstacle 2: right offset (matches virtual_obstacle2_*)
-        # - Obstacle 3: left offset again (sequence_obstacle3_*)
-        # Positions are chosen so the mower must avoid, rejoin, and avoid again.
-        self.virtual_obstacle_cx = 3.0
-        self.virtual_obstacle_cy = 0.7
-        self.virtual_obstacle_radius = 0.5
-        self.virtual_obstacle2_cx = 6.0
-        self.virtual_obstacle2_cy = -0.7
-        self.virtual_obstacle2_radius = 0.5
-        self.sequence_obstacle3_cx = 8.5
-        self.sequence_obstacle3_cy = 0.7
-        self.sequence_obstacle3_radius = 0.5
+        self.sequence_obstacle3_cx = float(self.get_parameter('virtual_obstacle3_center_x').value)
+        self.sequence_obstacle3_cy = float(self.get_parameter('virtual_obstacle3_center_y').value)
+        self.sequence_obstacle3_radius = float(self.get_parameter('virtual_obstacle3_radius_m').value)
 
         self.stop_asserted = False
         self.last_cmd_vel = Twist()
