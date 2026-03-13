@@ -19,7 +19,7 @@ waypoint_follower:
     mission_frame_id: "odom"
     max_linear_speed: 0.5
     max_angular_speed: 1.2
-    waypoint_tolerance_m: 0.2
+    waypoint_tolerance_m: 0.5
     debug_log: true
     debug_log_period_ms: 1000
     # Bug state machine tuning

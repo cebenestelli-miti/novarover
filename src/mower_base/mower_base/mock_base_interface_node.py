@@ -8,6 +8,7 @@ from std_msgs.msg import Empty, Bool
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from mower_msgs.msg import UltrasonicArray
+from visualization_msgs.msg import Marker, MarkerArray
 
 
 _SENSOR_POSES = [
@@ -80,12 +81,28 @@ class MockBaseInterfaceNode(Node):
         po = self.get_parameter('publish_odom').value
         self.publish_odom = po if isinstance(po, bool) else (str(po).lower() == 'true')
 
+        # Base virtual obstacle parameters (used as a starting point, then repositioned
+        # for the straight-line multi-obstacle test).
         self.virtual_obstacle_cx = float(self.get_parameter('virtual_obstacle_center_x').value)
         self.virtual_obstacle_cy = float(self.get_parameter('virtual_obstacle_center_y').value)
         self.virtual_obstacle_radius = float(self.get_parameter('virtual_obstacle_radius_m').value)
         self.virtual_obstacle2_cx = float(self.get_parameter('virtual_obstacle2_center_x').value)
         self.virtual_obstacle2_cy = float(self.get_parameter('virtual_obstacle2_center_y').value)
         self.virtual_obstacle2_radius = float(self.get_parameter('virtual_obstacle2_radius_m').value)
+        # Three-obstacle straight-line test (0,0 -> 10,0):
+        # - Obstacle 1: left offset (matches virtual_obstacle_*)
+        # - Obstacle 2: right offset (matches virtual_obstacle2_*)
+        # - Obstacle 3: left offset again (sequence_obstacle3_*)
+        # Positions are chosen so the mower must avoid, rejoin, and avoid again.
+        self.virtual_obstacle_cx = 3.0
+        self.virtual_obstacle_cy = 0.7
+        self.virtual_obstacle_radius = 0.5
+        self.virtual_obstacle2_cx = 6.0
+        self.virtual_obstacle2_cy = -0.7
+        self.virtual_obstacle2_radius = 0.5
+        self.sequence_obstacle3_cx = 8.5
+        self.sequence_obstacle3_cy = 0.7
+        self.sequence_obstacle3_radius = 0.5
 
         self.stop_asserted = False
         self.last_cmd_vel = Twist()
@@ -102,10 +119,16 @@ class MockBaseInterfaceNode(Node):
             self.ultrasonic_pub = self.create_publisher(UltrasonicArray, '/ultrasonic/ranges', 10)
         else:
             self.ultrasonic_pub = None
+        # RViz obstacle debug markers: publish cubes matching virtual obstacles
+        # to the same topic used by the waypoint follower for waypoints.
+        self.obstacle_markers_pub = self.create_publisher(
+            MarkerArray, '/mission/waypoints_markers', 1
+        )
         self.create_subscription(Bool, '/safety/stop', self._cb_safety_stop, 10)
         self.create_subscription(Twist, '/cmd_vel', self._cb_cmd_vel, 10)
 
         self.timer = self.create_timer(1.0 / self.publish_rate_hz, self._timer_cb)
+        self.markers_timer = self.create_timer(1.0, self._publish_obstacle_markers)
         self.get_logger().info('Mock base interface: publish_ultrasonic=%s publish_odom=%s' % (
             'true' if self.publish_ultrasonic else 'false',
             'true' if self.publish_odom else 'false'))
@@ -169,6 +192,60 @@ class MockBaseInterfaceNode(Node):
             ua.max_range_m = float(self.ultrasonic_max)
             self.ultrasonic_pub.publish(ua)
 
+    def _publish_obstacle_markers(self):
+        if self.obstacle_markers_pub is None:
+            return
+        array = MarkerArray()
+        now = self.get_clock().now().to_msg()
+
+        # Obstacles are defined in the odom frame for the straight-line sim test.
+        # Use distinct colors for each obstacle to aid debugging.
+        def make_cube(idx, cx, cy, radius, color):
+            m = Marker()
+            m.header.stamp = now
+            m.header.frame_id = self.odom_frame_id
+            m.ns = 'debug_obstacle'
+            m.id = idx
+            m.type = Marker.CUBE
+            m.action = Marker.ADD
+            m.pose.position.x = float(cx)
+            m.pose.position.y = float(cy)
+            m.pose.position.z = 0.35
+            m.scale.x = float(radius) * 2.0
+            m.scale.y = float(radius) * 2.0
+            m.scale.z = 0.7
+            m.color.r, m.color.g, m.color.b, m.color.a = color
+            return m
+
+        # Clear only our own obstacle namespace; waypoint markers use a different namespace.
+        clear = Marker()
+        clear.header.stamp = now
+        clear.header.frame_id = self.odom_frame_id
+        clear.ns = 'debug_obstacle'
+        clear.id = 0
+        clear.action = Marker.DELETEALL
+        array.markers.append(clear)
+
+        markers = []
+        if self.virtual_obstacle_radius > 0.0:
+            markers.append(
+                make_cube(0, self.virtual_obstacle_cx, self.virtual_obstacle_cy,
+                          self.virtual_obstacle_radius, (1.0, 0.15, 0.15, 1.0))
+            )
+        if self.virtual_obstacle2_radius > 0.0:
+            markers.append(
+                make_cube(1, self.virtual_obstacle2_cx, self.virtual_obstacle2_cy,
+                          self.virtual_obstacle2_radius, (1.0, 0.45, 0.0, 1.0))
+            )
+        if getattr(self, 'sequence_obstacle3_radius', 0.0) > 0.0:
+            markers.append(
+                make_cube(2, self.sequence_obstacle3_cx, self.sequence_obstacle3_cy,
+                          self.sequence_obstacle3_radius, (0.2, 0.8, 0.2, 1.0))
+            )
+
+        array.markers.extend(markers)
+        self.obstacle_markers_pub.publish(array)
+
     def _virtual_obstacle_ranges(self):
         ranges = [float(self.ultrasonic_clear)] * 6
         rx = self.x
@@ -211,6 +288,20 @@ class MockBaseInterfaceNode(Node):
                 )
                 if dist2 is not None:
                     best = dist2 if best is None else min(best, dist2)
+            if self.sequence_obstacle3_radius > 0.0:
+                dist3 = _ray_circle_distance(
+                    wx,
+                    wy,
+                    dx,
+                    dy,
+                    self.sequence_obstacle3_cx,
+                    self.sequence_obstacle3_cy,
+                    self.sequence_obstacle3_radius,
+                    self.ultrasonic_min,
+                    self.ultrasonic_max,
+                )
+                if dist3 is not None:
+                    best = dist3 if best is None else min(best, dist3)
             if best is not None:
                 ranges[i] = best
         return ranges

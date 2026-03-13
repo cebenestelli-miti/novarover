@@ -75,7 +75,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "waypoint_tolerance_m",
-                default_value="0.1",
+                default_value="0.5",
                 description="Waypoint tolerance (m) for RViz mission test.",
             ),
             bringup_launch,

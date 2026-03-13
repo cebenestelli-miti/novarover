@@ -53,7 +53,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "waypoint_tolerance_m",
-                default_value="0.2",
+                default_value="0.5",
                 description="Waypoint reach tolerance (meters) for waypoint_follower.",
             ),
             DeclareLaunchArgument(
@@ -75,13 +75,13 @@ def generate_launch_description():
                         "simulate_obstacle_range_m": LaunchConfiguration(
                             "simulate_obstacle_range_m"
                         ),
-                        # Virtual 1x1 m box at 5 m along +X (~circle radius 0.5 m)
-                        "virtual_obstacle_center_x": 5.0,
-                        "virtual_obstacle_center_y": 0.0,
+                        # Three-obstacle straight-line test (0,0 -> 10,0):
+                        # 1: left offset, 2: right offset, 3: left offset again.
+                        "virtual_obstacle_center_x": 3.0,
+                        "virtual_obstacle_center_y": 0.7,
                         "virtual_obstacle_radius_m": 0.5,
-                        # Second virtual obstacle 1.5 m further ahead
-                        "virtual_obstacle2_center_x": 6.5,
-                        "virtual_obstacle2_center_y": 1.0,
+                        "virtual_obstacle2_center_x": 6.0,
+                        "virtual_obstacle2_center_y": -0.7,
                         "virtual_obstacle2_radius_m": 0.5,
                         "publish_ultrasonic": LaunchConfiguration("publish_ultrasonic"),
                         "publish_odom": LaunchConfiguration("mock_publish_odom"),
@@ -139,10 +139,16 @@ def generate_launch_description():
                         "waypoint_tolerance_m": LaunchConfiguration(
                             "waypoint_tolerance_m"
                         ),
-                        # Match virtual obstacle used by mock base so Bug behavior vs. box is visible.
-                        "debug_obstacle_center_x": 5.0,
-                        "debug_obstacle_center_y": 0.0,
+                        # Match mock base three-obstacle layout (visible in RViz).
+                        "debug_obstacle_center_x": 3.0,
+                        "debug_obstacle_center_y": 0.7,
                         "debug_obstacle_radius_m": 0.5,
+                        "debug_obstacle2_center_x": 6.0,
+                        "debug_obstacle2_center_y": -0.7,
+                        "debug_obstacle2_radius_m": 0.5,
+                        "debug_obstacle3_center_x": 8.5,
+                        "debug_obstacle3_center_y": 0.7,
+                        "debug_obstacle3_radius_m": 0.5,
                     },
                 ],
             ),

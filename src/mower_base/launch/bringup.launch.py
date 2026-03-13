@@ -46,7 +46,7 @@ def generate_launch_description():
             description='Mock only: if > 0, front ultrasonics report this range (m) to test go-around (blocked-skip). -1 = off.'),
         DeclareLaunchArgument('mock_publish_odom', default_value='true',
             description='Mock base: set false when Gazebo bridge provides /odom/raw to avoid dual-publisher conflict.'),
-    DeclareLaunchArgument('waypoint_tolerance_m', default_value='0.2',
+    DeclareLaunchArgument('waypoint_tolerance_m', default_value='0.5',
         description='Waypoint reach tolerance (meters) for waypoint_follower.'),
         # Mock base: for development/testing without hardware
         Node(

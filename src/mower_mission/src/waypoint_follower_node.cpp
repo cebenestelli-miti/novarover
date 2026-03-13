@@ -95,7 +95,7 @@ public:
     rejoin_y_(0.0),
     have_rejoin_pose_(false)
   {
-    declare_parameter("waypoint_tolerance_m",       0.2);
+    declare_parameter("waypoint_tolerance_m",       0.5);
     declare_parameter("max_linear_speed",           0.5);
     declare_parameter("max_angular_speed",          0.8);
     declare_parameter("waypoints",                  std::vector<double>{});
@@ -106,9 +106,6 @@ public:
     declare_parameter("mission_frame_id",           std::string("odom"));
     declare_parameter("debug_log",                  true);
     declare_parameter("debug_log_period_ms",        1000);
-    declare_parameter("debug_obstacle_center_x",    0.0);
-    declare_parameter("debug_obstacle_center_y",    0.0);
-    declare_parameter("debug_obstacle_radius_m",    0.0);
 
     // Bug behavior tuning (aligned with ultrasonic_guard defaults: stop=0.30, blocked=1.20, caution=2.0)
     declare_parameter("bug_trigger_dist_m",              2.0);   // enter BUG when in ultrasonic CAUTION
@@ -154,10 +151,22 @@ public:
     declare_parameter("bug_cooldown_rejoin_radius_m",   0.80);  // cooldown only blocks within this radius of rejoin point
     declare_parameter("bug_cooldown_override_front_m",  1.10);  // if front gets this close during cooldown, override
     declare_parameter("bug_cooldown_caution_speed_ms",  0.18);  // conservative speed when cooldown active + front caution
+    // Goal-near override: if we are very close to the waypoint and the side wall is gone,
+    // prefer goal capture over continued FOLLOW_OBSTACLE.
+    declare_parameter("bug_goal_capture_dist_m",        0.80);  // within this of goal: override FOLLOW_OBSTACLE when safe
+    // Heading threshold for near-goal pivot capture (in GO_TO_GOAL).
+    declare_parameter("bug_goal_pivot_heading_rad",     0.70);  // large heading error before we pivot in place
+    // Near-goal lockout: within this distance, suppress caution-based FOLLOW_OBSTACLE re-entry (final capture).
+    declare_parameter("bug_goal_lockout_dist_m",        0.85);  // commit to waypoint capture; only strong block re-enters
     // Global progress guard: prevent huge looping/doubling back around obstacles.
     declare_parameter("bug_follow_max_goal_increase_m",  3.0);   // max extra distance from hit to goal before treating as bad
     declare_parameter("bug_follow_max_backtrack_m",      1.0);   // max allowed backtrack behind hit point along goal dir
     declare_parameter("bug_follow_bad_global_ticks",     60);    // ticks of bad global geometry before forcing BLOCKED_STOP
+    // Side-distance protection: hard recovery and stop when too close on the side (motion-aware).
+    declare_parameter("bug_side_recovery_dist_m",        0.50);  // below this: reduce speed, strong turn-away (no gentle follow)
+    declare_parameter("bug_side_stop_dist_m",           0.35);  // below this + moving toward side: stop and turn away
+    declare_parameter("bug_side_recovery_angular",      0.28);  // turn-away rate in recovery zone
+    declare_parameter("bug_side_recovery_speed_ms",     0.12);  // max speed when in side recovery
 
     waypoint_tolerance_  = get_parameter("waypoint_tolerance_m").as_double();
     max_linear_speed_    = get_parameter("max_linear_speed").as_double();
@@ -209,10 +218,13 @@ public:
     cooldown_rejoin_radius_m_ = get_parameter("bug_cooldown_rejoin_radius_m").as_double();
     cooldown_override_front_m_ = get_parameter("bug_cooldown_override_front_m").as_double();
     cooldown_caution_speed_ = get_parameter("bug_cooldown_caution_speed_ms").as_double();
-
-    debug_obstacle_cx_   = get_parameter("debug_obstacle_center_x").as_double();
-    debug_obstacle_cy_   = get_parameter("debug_obstacle_center_y").as_double();
-    debug_obstacle_radius_ = get_parameter("debug_obstacle_radius_m").as_double();
+    goal_capture_dist_m_    = get_parameter("bug_goal_capture_dist_m").as_double();
+    goal_pivot_heading_rad_ = get_parameter("bug_goal_pivot_heading_rad").as_double();
+    goal_lockout_dist_m_    = get_parameter("bug_goal_lockout_dist_m").as_double();
+    side_recovery_dist_m_   = get_parameter("bug_side_recovery_dist_m").as_double();
+    side_stop_dist_m_       = get_parameter("bug_side_stop_dist_m").as_double();
+    side_recovery_angular_ = get_parameter("bug_side_recovery_angular").as_double();
+    side_recovery_speed_   = get_parameter("bug_side_recovery_speed_ms").as_double();
 
     loadWaypoints();
 
@@ -243,6 +255,9 @@ public:
     control_timer_ = create_wall_timer(
       std::chrono::milliseconds(100),
       std::bind(&WaypointFollowerNode::controlLoop, this));
+    markers_timer_ = create_wall_timer(
+      std::chrono::seconds(1),
+      std::bind(&WaypointFollowerNode::publishWaypointMarkers, this));
 
     RCLCPP_INFO(get_logger(),
       "Waypoint follower: %zu waypoints, tol=%.2f m, bug_trigger=%.2f m",
@@ -368,22 +383,22 @@ private:
 
   void publishWaypointMarkers()
   {
-    if (!waypoint_markers_pub_ || waypoints_.empty()) {
+    if (!waypoint_markers_pub_) {
       return;
     }
     visualization_msgs::msg::MarkerArray array;
     const auto now = get_clock()->now();
 
-    // Clear all previous markers in this namespace.
-    visualization_msgs::msg::Marker clear;
-    clear.header.frame_id = mission_frame_id_;
-    clear.header.stamp = now;
-    clear.ns = "waypoints";
-    clear.id = 0;
-    clear.action = visualization_msgs::msg::Marker::DELETEALL;
-    array.markers.push_back(clear);
+    // Clear previous waypoint markers in this namespace.
+    visualization_msgs::msg::Marker clear_wp;
+    clear_wp.header.frame_id = mission_frame_id_;
+    clear_wp.header.stamp = now;
+    clear_wp.ns = "waypoints";
+    clear_wp.id = 0;
+    clear_wp.action = visualization_msgs::msg::Marker::DELETEALL;
+    array.markers.push_back(clear_wp);
 
-    // Spheres + text labels for each waypoint.
+    // Spheres + text labels for each waypoint (only when we have waypoints).
     for (size_t i = 0; i + 1u < waypoints_.size(); i += 2u) {
       const double wx = waypoints_[i];
       const double wy = waypoints_[i + 1u];
@@ -423,27 +438,6 @@ private:
       array.markers.push_back(label);
     }
 
-    // Optional debug obstacle visualization (e.g., virtual 1x1 m box).
-    if (debug_obstacle_radius_ > 0.0) {
-      visualization_msgs::msg::Marker obs;
-      obs.header.frame_id = mission_frame_id_;
-      obs.header.stamp = now;
-      obs.ns = "debug_obstacle";
-      obs.id = 0;
-      obs.type = visualization_msgs::msg::Marker::CUBE;
-      obs.action = visualization_msgs::msg::Marker::ADD;
-      obs.pose.position.x = debug_obstacle_cx_;
-      obs.pose.position.y = debug_obstacle_cy_;
-      obs.pose.position.z = 0.25;
-      obs.scale.x = debug_obstacle_radius_ * 2.0;
-      obs.scale.y = debug_obstacle_radius_ * 2.0;
-      obs.scale.z = 0.5;
-      obs.color.r = 1.0f;
-      obs.color.g = 0.1f;
-      obs.color.b = 0.1f;
-      obs.color.a = 0.7f;
-      array.markers.push_back(obs);
-    }
 
     waypoint_markers_pub_->publish(array);
   }
@@ -479,7 +473,16 @@ private:
     const double dyaw     = wrapAngle(goal_yaw - yaw);
 
     constexpr double ang_thr = 0.15;
-    if (std::fabs(dyaw) > ang_thr) {
+    const bool near_goal = dist < goal_capture_dist_m_;
+
+    if (near_goal) {
+      // Final capture region: slow down and allow stronger heading correction
+      // so we can tighten the turn into the waypoint without looping.
+      const double max_lin = std::min(max_linear_speed_, 0.18);
+      cmd.linear.x = std::min(max_lin, dist * 0.4);
+      cmd.angular.z = std::max(-max_angular_speed_,
+                        std::min(max_angular_speed_, dyaw * 0.9));
+    } else if (std::fabs(dyaw) > ang_thr) {
       cmd.angular.z = (dyaw > 0.0 ? 1.0 : -1.0) * max_angular_speed_;
     } else {
       cmd.linear.x  = std::min(max_linear_speed_, dist * 0.5);
@@ -601,6 +604,23 @@ private:
     // Prevent looping: track along-goal progress (used for diagnostics; leave requires passed_obstacle).
     if (along_goal_m > best_along_goal_) {
       best_along_goal_ = along_goal_m;
+    }
+
+    // ── Goal-near override: prefer goal capture over continued FOLLOW_OBSTACLE ──
+    const bool goal_near = goal_dist < goal_capture_dist_m_;
+    const bool side_useful_for_goal = side_valid && (side_range_m < side_wall_max_valid_m_);
+    if (goal_near && front_clear && !side_useful_for_goal) {
+      // Close to goal, front is safe, and the side wall is effectively gone:
+      // stop FOLLOW_OBSTACLE and let GO_TO_GOAL capture the waypoint cleanly.
+      nav_state_ = NavState::GO_TO_GOAL;
+      follow_phase_ = FollowPhase::DRIVE_ALONG;
+      front_blocked_ticks_ = 0;
+      RCLCPP_INFO(get_logger(),
+        "BUG FOLLOW -> GO_TO_GOAL (goal capture override) dist=%.2f front=%.2f along=%.2f",
+        goal_dist, front_range, along_goal_m);
+      cmd.linear.x = 0.0;
+      cmd.angular.z = 0.0;
+      return;
     }
 
     // ── Leave conditions (rejoin waypoint path) ─────────────────────────────────
@@ -767,6 +787,24 @@ private:
       }
     }
 
+    // Side-distance protection (motion-aware): do not allow scraping the side; only intervene when too close.
+    const double away_sign = follow_left_wall_ ? -1.0 : 1.0;
+    const bool steering_toward_obstacle = (follow_left_wall_ && w > 0.0) || (!follow_left_wall_ && w < 0.0);
+    if (side_valid) {
+      if (side_range_m < side_stop_dist_m_ && steering_toward_obstacle) {
+        // Too close and moving toward this side: stop and strong turn-away (motion-aware stop).
+        cmd.linear.x = 0.0;
+        w = away_sign * side_recovery_angular_;
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 500,
+          "BUG side_stop side=%.2f < %.2f (moving toward side) -> stop + turn away",
+          side_range_m, side_stop_dist_m_);
+      } else if (side_range_m < side_recovery_dist_m_) {
+        // Below recovery threshold: no gentle wall-follow; reduce speed and stronger turn-away until clearance improves.
+        cmd.linear.x = std::min(cmd.linear.x, side_recovery_speed_);
+        w = away_sign * side_recovery_angular_;
+      }
+    }
+
     // Controlled rejoin test: if we have lost the side edge for a while, treat this as
     // "maybe past obstacle" and bias slightly back toward the waypoint direction, but
     // only when front is comfortably clear and we have real bypass progress.
@@ -870,14 +908,16 @@ private:
 
     // ── Waypoint reached ──────────────────────────────────────────────────────
     if (dist < waypoint_tolerance_) {
+      const bool was_in_lockout = (dist < goal_lockout_dist_m_);
       RCLCPP_INFO(get_logger(),
         "WP_REACHED idx=%zu/%zu pose=(%.6f,%.6f,yaw=%.6f) "
-        "goal=(%.6f,%.6f) dist=%.6f tol=%.6f state=%s",
+        "goal=(%.6f,%.6f) dist=%.6f tol=%.6f state=%s%s",
         idx, waypoints_.size() / 2u,
         x, y, yaw,
         gx, gy, dist, waypoint_tolerance_,
         (nav_state_ == NavState::GO_TO_GOAL ? "GO_TO_GOAL" :
-          (nav_state_ == NavState::FOLLOW_OBSTACLE ? "FOLLOW_OBSTACLE" : "BLOCKED_STOP")));
+          (nav_state_ == NavState::FOLLOW_OBSTACLE ? "FOLLOW_OBSTACLE" : "BLOCKED_STOP")),
+        (was_in_lockout ? " [near-goal lockout was active]" : ""));
       current_waypoint_index_++;
       nav_state_ = NavState::GO_TO_GOAL;
       follow_phase_ = FollowPhase::DRIVE_ALONG;
@@ -915,7 +955,46 @@ private:
       const bool moved_far_from_rejoin = have_rejoin_pose_ && (dist_from_rejoin >= cooldown_rejoin_radius_m_);
       const bool cooldown_override = (follow_cooldown_ticks_ > 0) && (front_strong || moved_far_from_rejoin);
 
-      if (would_trigger && (follow_cooldown_ticks_ == 0 || cooldown_override)) {
+      // Near-goal lockout: in this region, do not re-enter FOLLOW_OBSTACLE on ordinary caution;
+      // only allow re-entry for a truly strong (hard-block) front obstacle.
+      const bool near_goal_lockout = (dist < goal_lockout_dist_m_);
+      const bool strong_obstacle_near_goal = isFrontHardBlocked();
+      const bool allow_reentry_normal = would_trigger && (follow_cooldown_ticks_ == 0 || cooldown_override);
+      const bool allow_reentry = allow_reentry_normal && (!near_goal_lockout || strong_obstacle_near_goal);
+
+      if (near_goal_lockout && allow_reentry_normal && !strong_obstacle_near_goal) {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1500,
+          "near-goal lockout: obstacle re-entry suppressed (final capture) dist=%.2f front=%.2f",
+          dist, front_range);
+      }
+      if (near_goal_lockout && strong_obstacle_near_goal && would_trigger) {
+        RCLCPP_INFO(get_logger(),
+          "near-goal strong obstacle override: re-entering FOLLOW_OBSTACLE dist=%.2f front=%.2f",
+          dist, front_range);
+      }
+      if (near_goal_lockout) {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
+          "near-goal lockout active dist=%.2f (commit to final capture)", dist);
+      }
+
+      // Near-goal pivot capture: only when very close, heading error large, front safely clear,
+      // no active side wall, and no ultrasonic hazard. This is a local, final-approach behavior.
+      const bool goal_near = (dist < goal_capture_dist_m_);
+      const bool heading_large = (std::fabs(heading_err) > goal_pivot_heading_rad_);
+      const bool front_safe_for_pivot = std::isfinite(front_range) && (front_range > leave_front_clear_m_);
+      const bool left_side_useful = sideWallValid(true) && (sideWallRange(true) < side_wall_max_valid_m_);
+      const bool right_side_useful = sideWallValid(false) && (sideWallRange(false) < side_wall_max_valid_m_);
+      const bool any_side_useful = left_side_useful || right_side_useful;
+      if (!hazard_caution_or_worse && goal_near && heading_large && front_safe_for_pivot && !any_side_useful) {
+        cmd.linear.x = 0.0;
+        cmd.angular.z = std::max(-max_angular_speed_,
+                          std::min(max_angular_speed_, heading_err * 0.9));
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+          "GOAL PIVOT dist=%.2f heading_err=%.2f front=%.2f sideL=%.2f sideR=%.2f",
+          dist, heading_err, front_range,
+          left_side_useful ? sideWallRange(true) : std::numeric_limits<double>::infinity(),
+          right_side_useful ? sideWallRange(false) : std::numeric_limits<double>::infinity());
+      } else if (allow_reentry) {
         if (cooldown_override) {
           RCLCPP_INFO(get_logger(),
             "BUG cooldown override: %s%s (cooldown_ticks=%d front=%.2f dist_from_rejoin=%.2f)",
@@ -997,6 +1076,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr           cmd_vel_pub_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr                 complete_client_;
   rclcpp::TimerBase::SharedPtr                                      control_timer_;
+  rclcpp::TimerBase::SharedPtr                                      markers_timer_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr waypoint_markers_pub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr                  path_pub_;
 
@@ -1059,10 +1139,13 @@ private:
   double     cooldown_rejoin_radius_m_;
   double     cooldown_override_front_m_;
   double     cooldown_caution_speed_;
-
-  double     debug_obstacle_cx_;
-  double     debug_obstacle_cy_;
-  double     debug_obstacle_radius_;
+  double     goal_capture_dist_m_;
+  double     goal_pivot_heading_rad_;
+  double     goal_lockout_dist_m_;
+  double     side_recovery_dist_m_;
+  double     side_stop_dist_m_;
+  double     side_recovery_angular_;
+  double     side_recovery_speed_;
 
   // Bug state
   NavState   nav_state_;
@@ -1089,9 +1172,9 @@ private:
   int        follow_cooldown_ticks_;  // in GO_TO_GOAL: decrement; blocks re-entry when > 0
   int        break_away_ticks_;       // ticks spent in TURN_AWAY (capped)
   double     best_along_goal_;        // best along_goal so far (detect looping)
-  int        drive_along_bad_progress_ticks_;
   double     prev_front_range_;
   int        front_decreasing_ticks_;
+  int        drive_along_bad_progress_ticks_;
   int        follow_bad_global_ticks_;
   double     rejoin_x_;
   double     rejoin_y_;
