@@ -948,7 +948,11 @@ private:
       const double front_range = minFrontRange();
       const bool front_caution = isFrontCaution();
       const bool front_strong = std::isfinite(front_range) && (front_range < cooldown_override_front_m_);
-      // BUG FOLLOW only starts when a usable side edge exists (avoids corridor false positives).
+      // Strong front block for BUG FOLLOW exception: closer than hard_block_dist_,
+      // indicating a real obstacle directly ahead (even if no side edge yet).
+      const bool front_strong_block = std::isfinite(front_range) && (front_range < hard_block_dist_);
+      // BUG FOLLOW only starts when a usable side edge exists (avoids corridor false positives),
+      // unless front_strong_block is true (single obstacle directly ahead).
       const bool side_left_valid = sideWallValid(true);
       const bool side_right_valid = sideWallValid(false);
       const double side_left_range = side_left_valid ? sideWallRange(true) : std::numeric_limits<double>::infinity();
@@ -967,12 +971,17 @@ private:
       // only allow re-entry for a truly strong (hard-block) front obstacle.
       const bool near_goal_lockout = (dist < goal_lockout_dist_m_);
       const bool strong_obstacle_near_goal = isFrontHardBlocked();
-      const bool allow_reentry_normal = would_trigger && side_edge_detected && (follow_cooldown_ticks_ == 0 || cooldown_override);
+      // BUG FOLLOW start condition:
+      // - corridor protection via side_edge_detected
+      // - plus exception for a strongly blocking obstacle directly ahead.
+      const bool allow_reentry_normal =
+        would_trigger && (side_edge_detected || front_strong_block) &&
+        (follow_cooldown_ticks_ == 0 || cooldown_override);
       const bool allow_reentry = allow_reentry_normal && (!near_goal_lockout || strong_obstacle_near_goal);
 
-      if (would_trigger && !side_edge_detected) {
+      if (would_trigger && !side_edge_detected && !front_strong_block) {
         RCLCPP_INFO(get_logger(),
-          "Front caution but no side edge detected → staying GO_TO_GOAL");
+          "Front caution but no side edge detected -> staying GO_TO_GOAL");
       }
       if (near_goal_lockout && allow_reentry_normal && !strong_obstacle_near_goal) {
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1500,
