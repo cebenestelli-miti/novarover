@@ -63,6 +63,7 @@ public:
     complete_sent_(false),
     safety_stop_(false),
     hazard_level_(0),
+    pinch_dead_end_ticks_(0),
     nav_state_(NavState::GO_TO_GOAL),
     follow_phase_(FollowPhase::DRIVE_ALONG),
     follow_left_wall_(false),
@@ -85,7 +86,10 @@ public:
     front_clear_ticks_(0),
     front_comfy_ticks_(0),
     follow_cooldown_ticks_(0),
+    caution_shrinking_ticks_(0),
+    prev_go_to_goal_front_range_(std::numeric_limits<double>::infinity()),
     break_away_ticks_(0),
+    drive_along_ticks_(0),
     best_along_goal_(0.0),
     prev_front_range_(std::numeric_limits<double>::infinity()),
     front_decreasing_ticks_(0),
@@ -136,8 +140,8 @@ public:
     declare_parameter("bug_leave_front_comfy_m",        1.4);   // comfortably clear front required to leave
     declare_parameter("bug_leave_front_comfy_ticks",    8);     // consecutive comfy ticks required to leave
     // Simplified bypass: short break-away then alongside (come alongside, no looping).
-    declare_parameter("bug_break_away_rad",              0.45); // heading change to end break-away (~26 deg)
-    declare_parameter("bug_break_away_max_ticks",        20);    // max ticks in break-away (~2 s)
+    declare_parameter("bug_break_away_rad",              0.55); // heading change to end break-away (~32 deg); more turn before DRIVE_ALONG
+    declare_parameter("bug_break_away_max_ticks",        28);    // max ticks in break-away (~2.8 s)
     declare_parameter("bug_alongside_angular_bias",       0.06);  // very small turn in bypass direction
     declare_parameter("bug_alongside_max_angular",      0.12); // cap steering in alongside (gentle)
     declare_parameter("bug_leave_side_clear_m",         1.2);   // rejoin when side sensor sees obstacle this far (past it)
@@ -151,13 +155,25 @@ public:
     declare_parameter("bug_cooldown_rejoin_radius_m",   0.80);  // cooldown only blocks within this radius of rejoin point
     declare_parameter("bug_cooldown_override_front_m",  1.10);  // if front gets this close during cooldown, override
     declare_parameter("bug_cooldown_caution_speed_ms",  0.18);  // conservative speed when cooldown active + front caution
+    // Strong front-block start distance: start BUG when front below this (more room = earlier start).
+    declare_parameter("bug_front_block_start_dist_m",   0.90);
+    declare_parameter("bug_caution_shrinking_ticks",     4);   // ticks with caution + no side + front shrinking -> early BUG
     // Goal-near override: if we are very close to the waypoint and the side wall is gone,
     // prefer goal capture over continued FOLLOW_OBSTACLE.
     declare_parameter("bug_goal_capture_dist_m",        0.80);  // within this of goal: override FOLLOW_OBSTACLE when safe
     // Heading threshold for near-goal pivot capture (in GO_TO_GOAL).
     declare_parameter("bug_goal_pivot_heading_rad",     0.70);  // large heading error before we pivot in place
     // Near-goal lockout: within this distance, suppress caution-based FOLLOW_OBSTACLE re-entry (final capture).
-    declare_parameter("bug_goal_lockout_dist_m",        0.85);  // commit to waypoint capture; only strong block re-enters
+    declare_parameter("bug_goal_lockout_dist_m",        0.85);  // commit to waypoint capture
+    // Near-goal obstacle behavior: treat front blocks more aggressively and relax leave requirements.
+    declare_parameter("bug_near_goal_obstacle_dist_m",  2.0);   // within this of goal: enable near-goal BUG behavior
+    declare_parameter("bug_near_goal_front_start_dist_m", 0.80); // near-goal front-block start (between trigger & hard block)
+    // Narrow-gap / dead-end detection during DRIVE_ALONG (tuned to allow outside bypass attempt first).
+    declare_parameter("bug_pinch_front_threshold_m",        0.38);  // front below this -> suspect pinch (tighter = less aggressive)
+    declare_parameter("bug_pinch_follow_side_threshold_m",  1.00);  // side within this -> still tightly following wall
+    declare_parameter("bug_pinch_min_along_goal_progress_m", 0.18); // dead-end only if along-goal stays below this (small = more patience)
+    declare_parameter("bug_pinch_progress_timeout_ticks",   38);    // ticks in pinch pattern before BLOCKED_STOP (~3.8 s at 10 Hz)
+    declare_parameter("bug_pinch_grace_ticks",              10);    // do not count pinch until DRIVE_ALONG for this many ticks
     // Global progress guard: prevent huge looping/doubling back around obstacles.
     declare_parameter("bug_follow_max_goal_increase_m",  3.0);   // max extra distance from hit to goal before treating as bad
     declare_parameter("bug_follow_max_backtrack_m",      1.0);   // max allowed backtrack behind hit point along goal dir
@@ -218,6 +234,15 @@ public:
     cooldown_rejoin_radius_m_ = get_parameter("bug_cooldown_rejoin_radius_m").as_double();
     cooldown_override_front_m_ = get_parameter("bug_cooldown_override_front_m").as_double();
     cooldown_caution_speed_ = get_parameter("bug_cooldown_caution_speed_ms").as_double();
+    front_block_start_dist_m_ = get_parameter("bug_front_block_start_dist_m").as_double();
+    caution_shrinking_ticks_req_ = get_parameter("bug_caution_shrinking_ticks").as_int();
+    near_goal_obstacle_dist_m_ = get_parameter("bug_near_goal_obstacle_dist_m").as_double();
+    near_goal_front_start_dist_m_ = get_parameter("bug_near_goal_front_start_dist_m").as_double();
+    pinch_front_threshold_m_ = get_parameter("bug_pinch_front_threshold_m").as_double();
+    pinch_follow_side_threshold_m_ = get_parameter("bug_pinch_follow_side_threshold_m").as_double();
+    pinch_min_along_goal_progress_m_ = get_parameter("bug_pinch_min_along_goal_progress_m").as_double();
+    pinch_progress_timeout_ticks_ = get_parameter("bug_pinch_progress_timeout_ticks").as_int();
+    pinch_grace_ticks_ = get_parameter("bug_pinch_grace_ticks").as_int();
     goal_capture_dist_m_    = get_parameter("bug_goal_capture_dist_m").as_double();
     goal_pivot_heading_rad_ = get_parameter("bug_goal_pivot_heading_rad").as_double();
     goal_lockout_dist_m_    = get_parameter("bug_goal_lockout_dist_m").as_double();
@@ -626,7 +651,16 @@ private:
     // ── Leave conditions (rejoin waypoint path) ─────────────────────────────────
     // Do not rejoin early: require real bypass progress + acceptable heading + front clear.
     const bool leave_ok = followed_long_enough && passed_obstacle && progressed && facing_goal && front_clear && front_clear_long_enough && front_comfy_long_enough;
-    if (leave_ok) {
+    // Near-goal relaxed leave: when close to the waypoint, require less along-goal
+    // progress; if the front is clear and the side wall is weak/lost, prefer GO_TO_GOAL.
+    const bool near_goal_for_obstacle_leave = (goal_dist < near_goal_obstacle_dist_m_);
+    const bool side_near_max_for_leave = side_valid && (side_range_m >= side_wall_max_valid_m_);
+    const bool side_weak_or_lost_for_leave = !side_valid || side_near_max_for_leave;
+    const bool leave_near_goal_ok =
+      !leave_ok && near_goal_for_obstacle_leave && followed_long_enough &&
+      front_clear && side_weak_or_lost_for_leave;
+
+    if (leave_ok || leave_near_goal_ok) {
       follow_cooldown_ticks_ = follow_cooldown_ticks_param_;
       rejoin_x_ = x;
       rejoin_y_ = y;
@@ -634,9 +668,15 @@ private:
       nav_state_ = NavState::GO_TO_GOAL;
       follow_phase_ = FollowPhase::DRIVE_ALONG;
       front_blocked_ticks_ = 0;
-      RCLCPP_INFO(get_logger(),
-        "BUG FOLLOW COMPLETE (rejoin) passed_along=%.2fm pos=(%.2f,%.2f) side=%s — cooldown set",
-        along_goal_m, x, y, follow_left_wall_ ? "LEFT" : "RIGHT");
+      if (leave_near_goal_ok) {
+        RCLCPP_INFO(get_logger(),
+          "BUG FOLLOW COMPLETE (near-goal relaxed leave) goal_dist=%.2f passed_along=%.2f pos=(%.2f,%.2f) side=%s — cooldown set",
+          goal_dist, along_goal_m, x, y, follow_left_wall_ ? "LEFT" : "RIGHT");
+      } else {
+        RCLCPP_INFO(get_logger(),
+          "BUG FOLLOW COMPLETE (rejoin) passed_along=%.2fm pos=(%.2f,%.2f) side=%s — cooldown set",
+          along_goal_m, x, y, follow_left_wall_ ? "LEFT" : "RIGHT");
+      }
       cmd.linear.x = follow_speed_;
       cmd.angular.z = 0.0;
       return;
@@ -690,7 +730,7 @@ private:
     if (follow_bad_global_ticks_ >= follow_bad_global_ticks_param_) {
       nav_state_ = NavState::BLOCKED_STOP;
       RCLCPP_WARN(get_logger(),
-        "BUG FOLLOW BLOCKED_STOP (bad global progress) pos=(%.2f,%.2f) hit_goal_dist=%.2f goal_dist=%.2f along_goal=%.2f",
+        "BUG FOLLOW BLOCKED_STOP (bad global progress, latched) pos=(%.2f,%.2f) hit_goal_dist=%.2f goal_dist=%.2f along_goal=%.2f",
         x, y, hit_goal_dist_, goal_dist, along_goal_m);
       cmd.linear.x = 0.0;
       cmd.angular.z = 0.0;
@@ -705,7 +745,7 @@ private:
     }
     if (blocked_ticks_ >= blocked_ticks_req_) {
       nav_state_ = NavState::BLOCKED_STOP;
-      RCLCPP_WARN(get_logger(), "BUG BLOCKED_STOP at (%.2f,%.2f)", x, y);
+      RCLCPP_WARN(get_logger(), "BUG BLOCKED_STOP (front+no-side, latched) at (%.2f,%.2f)", x, y);
       return;
     }
 
@@ -719,8 +759,10 @@ private:
       const bool timeout = break_away_ticks_ >= break_away_max_ticks_;
       const bool side_near_max = side_valid && (side_range_m >= side_wall_max_valid_m_);
       const bool side_edge_acquired = side_valid && !side_near_max && (side_range_m <= edge_detect_max_m_);
-      if ((side_edge_acquired && !front_blocked) || timeout) {
+      const bool turned_enough = (turned >= break_away_rad_);
+      if (((side_edge_acquired && !front_blocked && turned_enough) || timeout)) {
         follow_phase_ = FollowPhase::DRIVE_ALONG;
+        drive_along_ticks_ = 0;
         RCLCPP_INFO(get_logger(),
           "BUG TURN_AWAY -> DRIVE_ALONG (side_edge=%d side=%.2f front=%.2f turned=%.2f ticks=%d)",
           side_edge_acquired ? 1 : 0, side_range_m, front_range, turned, break_away_ticks_);
@@ -738,6 +780,7 @@ private:
     }
 
     // ── DRIVE_ALONG: drive forward, gentle side-distance correction only ───────
+    drive_along_ticks_++;
     cmd.linear.x = follow_speed_;
     double w = 0.0;
 
@@ -836,6 +879,32 @@ private:
     } else {
       drive_along_bad_progress_ticks_ = 0;
     }
+
+    // Pinch / dead-end detection: front keeps shrinking toward safety stop,
+    // we still have a follow-side wall, and along-goal progress remains small
+    // for an extended period while in DRIVE_ALONG.
+    const bool pinch_front_tight =
+      std::isfinite(front_range) && (front_range < pinch_front_threshold_m_);
+    const bool pinch_side_present =
+      side_valid && (side_range_m < pinch_follow_side_threshold_m_);
+    const bool pinch_progress_small =
+      (along_goal_m < pinch_min_along_goal_progress_m_);
+    const bool pinch_grace_elapsed = (drive_along_ticks_ >= pinch_grace_ticks_);
+    if (pinch_grace_elapsed && pinch_front_tight && pinch_side_present && pinch_progress_small) {
+      pinch_dead_end_ticks_++;
+    } else {
+      pinch_dead_end_ticks_ = 0;
+    }
+    if (pinch_dead_end_ticks_ >= pinch_progress_timeout_ticks_) {
+      nav_state_ = NavState::BLOCKED_STOP;
+      cmd.linear.x = 0.0;
+      cmd.angular.z = 0.0;
+      RCLCPP_WARN(get_logger(),
+        "DEAD-END DURING DRIVE_ALONG -> BLOCKED_STOP (front=%.2f side=%.2f along_goal=%.2f)",
+        front_range, side_range_m, along_goal_m);
+      return;
+    }
+
     if (drive_along_bad_progress_ticks_ >= drive_along_bad_ticks_) {
       // Strong clearance recovery: stay in FOLLOW_OBSTACLE, same side, but go back to TURN_AWAY.
       follow_phase_ = FollowPhase::TURN_AWAY;
@@ -848,9 +917,9 @@ private:
         "BUG DRIVE_ALONG bad progress -> TURN_AWAY (along=%.2f best_along=%.2f goal=%.2f best_goal=%.2f front=%.2f side_r=%.2f)",
         along_goal_m, best_along_goal_, goal_dist, best_goal_dist_, front_range, side_range_m);
       // Apply an immediate strong turn-away this tick as well.
-      const double away_sign = follow_left_wall_ ? -1.0 : 1.0;
+      const double away_sign2 = follow_left_wall_ ? -1.0 : 1.0;
       cmd.linear.x = 0.0;
-      cmd.angular.z = away_sign * std::max(std::fabs(cmd.angular.z), 0.35);
+      cmd.angular.z = away_sign2 * std::max(std::fabs(cmd.angular.z), 0.35);
     }
 
     cmd.angular.z = std::max(-alongside_max_angular_, std::min(alongside_max_angular_, w));
@@ -948,9 +1017,15 @@ private:
       const double front_range = minFrontRange();
       const bool front_caution = isFrontCaution();
       const bool front_strong = std::isfinite(front_range) && (front_range < cooldown_override_front_m_);
-      // Strong front block for BUG FOLLOW exception: closer than hard_block_dist_,
+      // Strong front block for BUG FOLLOW exception: closer than bug_front_block_start_dist_m_,
       // indicating a real obstacle directly ahead (even if no side edge yet).
-      const bool front_strong_block = std::isfinite(front_range) && (front_range < hard_block_dist_);
+      const bool front_strong_block =
+        std::isfinite(front_range) && (front_range < front_block_start_dist_m_);
+      // Near-goal front block: more aggressive when we are close to the waypoint.
+      const bool near_goal_for_obstacle = (dist < near_goal_obstacle_dist_m_);
+      const bool near_goal_front_block =
+        near_goal_for_obstacle &&
+        std::isfinite(front_range) && (front_range < near_goal_front_start_dist_m_);
       // BUG FOLLOW only starts when a usable side edge exists (avoids corridor false positives),
       // unless front_strong_block is true (single obstacle directly ahead).
       const bool side_left_valid = sideWallValid(true);
@@ -960,6 +1035,19 @@ private:
       const bool side_edge_detected =
         (side_left_valid && side_left_range < side_wall_max_valid_m_) ||
         (side_right_valid && side_right_range < side_wall_max_valid_m_);
+      // Early BUG entry: front in caution, no side edge yet, and front steadily shrinking.
+      const double shrink_delta_m = 0.02;
+      const bool front_shrinking =
+        std::isfinite(front_range) && std::isfinite(prev_go_to_goal_front_range_) &&
+        (front_range < prev_go_to_goal_front_range_ - shrink_delta_m);
+      if (front_caution && !side_edge_detected && front_shrinking) {
+        caution_shrinking_ticks_++;
+      } else {
+        caution_shrinking_ticks_ = 0;
+      }
+      prev_go_to_goal_front_range_ = std::isfinite(front_range) ? front_range : prev_go_to_goal_front_range_;
+      const bool early_bug_caution_shrinking =
+        (caution_shrinking_ticks_ >= caution_shrinking_ticks_req_);
       double dist_from_rejoin = 0.0;
       if (have_rejoin_pose_) {
         dist_from_rejoin = std::hypot(x - rejoin_x_, y - rejoin_y_);
@@ -967,33 +1055,31 @@ private:
       const bool moved_far_from_rejoin = have_rejoin_pose_ && (dist_from_rejoin >= cooldown_rejoin_radius_m_);
       const bool cooldown_override = (follow_cooldown_ticks_ > 0) && (front_strong || moved_far_from_rejoin);
 
-      // Near-goal lockout: in this region, do not re-enter FOLLOW_OBSTACLE on ordinary caution;
-      // only allow re-entry for a truly strong (hard-block) front obstacle.
+      // Near-goal lockout: in this region, do not re-enter FOLLOW_OBSTACLE from caution.
+      // Final capture is committed; only /safety/stop may stop motion.
       const bool near_goal_lockout = (dist < goal_lockout_dist_m_);
-      const bool strong_obstacle_near_goal = isFrontHardBlocked();
       // BUG FOLLOW start condition:
       // - corridor protection via side_edge_detected
-      // - plus exception for a strongly blocking obstacle directly ahead.
+      // - plus strong front block, near-goal front block, or early entry when front steadily shrinking (no side).
       const bool allow_reentry_normal =
-        would_trigger && (side_edge_detected || front_strong_block) &&
+        would_trigger && (side_edge_detected || front_strong_block || near_goal_front_block) &&
         (follow_cooldown_ticks_ == 0 || cooldown_override);
-      const bool allow_reentry = allow_reentry_normal && (!near_goal_lockout || strong_obstacle_near_goal);
+      const bool allow_reentry_early_shrinking =
+        would_trigger && front_caution && !side_edge_detected && early_bug_caution_shrinking &&
+        (follow_cooldown_ticks_ == 0 || cooldown_override);
+      bool allow_reentry = allow_reentry_normal || allow_reentry_early_shrinking;
 
-      if (would_trigger && !side_edge_detected && !front_strong_block) {
+      if (would_trigger && !side_edge_detected && !front_strong_block && !near_goal_front_block && !allow_reentry_early_shrinking) {
         RCLCPP_INFO(get_logger(),
           "Front caution but no side edge detected -> staying GO_TO_GOAL");
       }
-      if (near_goal_lockout && allow_reentry_normal && !strong_obstacle_near_goal) {
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1500,
-          "near-goal lockout: obstacle re-entry suppressed (final capture) dist=%.2f front=%.2f",
-          dist, front_range);
-      }
-      if (near_goal_lockout && strong_obstacle_near_goal && would_trigger) {
-        RCLCPP_INFO(get_logger(),
-          "near-goal strong obstacle override: re-entering FOLLOW_OBSTACLE dist=%.2f front=%.2f",
-          dist, front_range);
-      }
       if (near_goal_lockout) {
+        if (allow_reentry_normal) {
+          RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1500,
+            "near-goal lockout: suppressing FOLLOW_OBSTACLE re-entry (final capture) dist=%.2f front=%.2f",
+            dist, front_range);
+        }
+        allow_reentry = false;
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 3000,
           "near-goal lockout active dist=%.2f (commit to final capture)", dist);
       }
@@ -1023,7 +1109,29 @@ private:
             moved_far_from_rejoin ? "moved_far" : "",
             follow_cooldown_ticks_, front_range, dist_from_rejoin);
         }
+        if (side_edge_detected && !front_strong_block && !near_goal_front_block) {
+          RCLCPP_INFO(get_logger(),
+            "BUG FOLLOW START (side edge) front=%.2f sideL=%.2f sideR=%.2f",
+            front_range, side_left_range, side_right_range);
+        } else if (!side_edge_detected && front_strong_block && !near_goal_front_block) {
+          RCLCPP_INFO(get_logger(),
+            "BUG FOLLOW START (strong front block) front=%.2f", front_range);
+        } else if (!side_edge_detected && near_goal_front_block) {
+          RCLCPP_INFO(get_logger(),
+            "BUG FOLLOW START (near-goal front block) front=%.2f dist=%.2f",
+            front_range, dist);
+        } else if (side_edge_detected && (front_strong_block || near_goal_front_block)) {
+          RCLCPP_INFO(get_logger(),
+            "BUG FOLLOW START (side edge + front block) front=%.2f sideL=%.2f sideR=%.2f dist=%.2f",
+            front_range, side_left_range, side_right_range, dist);
+        } else if (allow_reentry_early_shrinking) {
+          RCLCPP_INFO(get_logger(),
+            "BUG FOLLOW START (caution shrinking, no side) front=%.2f ticks=%d",
+            front_range, caution_shrinking_ticks_);
+        }
         front_blocked_ticks_ = 0;
+        caution_shrinking_ticks_ = 0;
+        prev_go_to_goal_front_range_ = std::numeric_limits<double>::infinity();
         startFollowObstacle(x, y, yaw, gx, gy);
         runFollowObstacle(cmd, x, y, yaw, gx, gy);
       } else {
@@ -1041,17 +1149,10 @@ private:
     } else if (nav_state_ == NavState::FOLLOW_OBSTACLE) {
       runFollowObstacle(cmd, x, y, yaw, gx, gy);
     } else { // BLOCKED_STOP
+      // BLOCKED_STOP is latched: remain stopped until mission/reset/operator action.
+      // Do not automatically re-enter FOLLOW_OBSTACLE; this avoids BLOCKED_STOP <-> FOLLOW_OBSTACLE loops.
       cmd.linear.x = 0.0;
       cmd.angular.z = 0.0;
-      if (!isFrontHardBlocked()) {
-        nav_state_ = NavState::FOLLOW_OBSTACLE;
-        follow_phase_ = FollowPhase::TURN_AWAY;
-        follow_start_yaw_ = yaw;
-        blocked_ticks_ = 0;
-        break_away_ticks_ = 0;
-        best_along_goal_ = 0.0;
-        RCLCPP_INFO(get_logger(), "BUG BLOCKED_STOP -> FOLLOW_OBSTACLE (TURN_AWAY)");
-      }
     }
 
     if (debug_log_) {
@@ -1154,12 +1255,23 @@ private:
   int        drive_along_decreasing_ticks_;
   double     drive_along_min_speed_;
   int        drive_along_bad_ticks_;
+  // Pinch / narrow-gap detection during DRIVE_ALONG
+  double     pinch_front_threshold_m_;
+  double     pinch_follow_side_threshold_m_;
+  double     pinch_min_along_goal_progress_m_;
+  int        pinch_progress_timeout_ticks_;
+  int        pinch_grace_ticks_;
+  int        pinch_dead_end_ticks_;
   double     follow_max_goal_increase_m_;
   double     follow_max_backtrack_m_;
   int        follow_bad_global_ticks_param_;
   double     cooldown_rejoin_radius_m_;
   double     cooldown_override_front_m_;
   double     cooldown_caution_speed_;
+  double     front_block_start_dist_m_;
+  int        caution_shrinking_ticks_req_;
+  double     near_goal_obstacle_dist_m_;
+  double     near_goal_front_start_dist_m_;
   double     goal_capture_dist_m_;
   double     goal_pivot_heading_rad_;
   double     goal_lockout_dist_m_;
@@ -1191,7 +1303,10 @@ private:
   int        front_clear_ticks_;  // consecutive ticks with front clear (for leave)
   int        front_comfy_ticks_;  // consecutive ticks with comfortably clear front (for leave)
   int        follow_cooldown_ticks_;  // in GO_TO_GOAL: decrement; blocks re-entry when > 0
+  int        caution_shrinking_ticks_;   // GO_TO_GOAL: consecutive ticks with caution + no side + front shrinking
+  double     prev_go_to_goal_front_range_;  // GO_TO_GOAL: previous front range for shrinking detection
   int        break_away_ticks_;       // ticks spent in TURN_AWAY (capped)
+  int        drive_along_ticks_;      // ticks in DRIVE_ALONG since last TURN_AWAY (for pinch grace)
   double     best_along_goal_;        // best along_goal so far (detect looping)
   double     prev_front_range_;
   int        front_decreasing_ticks_;
