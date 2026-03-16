@@ -66,6 +66,10 @@ class MockBaseInterfaceNode(Node):
         self.declare_parameter('virtual_obstacle3_center_x', 0.0)
         self.declare_parameter('virtual_obstacle3_center_y', 0.0)
         self.declare_parameter('virtual_obstacle3_radius_m', 0.0)
+        # Optional initial pose override (useful for RViz mission testing).
+        self.declare_parameter('initial_x', 0.0)
+        self.declare_parameter('initial_y', 0.0)
+        self.declare_parameter('initial_yaw_rad', 0.0)
         self.declare_parameter('odom_frame_id', 'odom')
         self.declare_parameter('base_frame_id', 'base_link')
         self.declare_parameter('publish_ultrasonic', True)
@@ -96,11 +100,13 @@ class MockBaseInterfaceNode(Node):
         self.sequence_obstacle3_cy = float(self.get_parameter('virtual_obstacle3_center_y').value)
         self.sequence_obstacle3_radius = float(self.get_parameter('virtual_obstacle3_radius_m').value)
 
+        # Initial pose (can be overridden via parameters; defaults to origin).
+        self.x = float(self.get_parameter('initial_x').value)
+        self.y = float(self.get_parameter('initial_y').value)
+        self.yaw = float(self.get_parameter('initial_yaw_rad').value)
+
         self.stop_asserted = False
         self.last_cmd_vel = Twist()
-        self.x = 0.0
-        self.y = 0.0
-        self.yaw = 0.0
 
         self.heartbeat_pub = self.create_publisher(Empty, '/base/heartbeat', 10)
         if self.publish_odom:

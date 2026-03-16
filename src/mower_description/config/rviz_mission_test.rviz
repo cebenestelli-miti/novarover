@@ -18,11 +18,12 @@ Visualization Manager:
       Name: Grid
       Plane: XY
       Plane Cell Count: 20
-      Reference Frame: odom
+      Reference Frame: map
     - Class: rviz_default_plugins/TF
       Enabled: true
       Frame Timeout: 15
       Name: TF
+      Queue Size: 100
       Show Arrows: true
       Show Axes: true
       Show Names: true
@@ -33,9 +34,10 @@ Visualization Manager:
     - Alpha: 1
       Class: rviz_default_plugins/Odometry
       Enabled: true
-      Keep: 200
+      Keep: 500
       Name: Odometry
       Position Tolerance: 0.01
+      Queue Size: 100
       Topic:
         Value: /odom
       Twist Color: 255;25;0
@@ -46,21 +48,23 @@ Visualization Manager:
       Color: 25;255;0
       Enabled: true
       Line Style: Lines
-      Line Width: 0.05
+      Line Width: 0.1
       Name: Path
+      Queue Size: 100
       Topic:
         Value: /mission/path
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: Waypoints
+      Queue Size: 100
       Topic:
         Value: /mission/waypoints_markers
   Enabled: true
   Global Options:
     Background Color: 30;30;30
-    Fixed Frame: odom
-    Frame Rate: 30
+    Fixed Frame: map
+    Frame Rate: 20
   Name: root
   Tools:
     - Class: rviz_default_plugins/Interact

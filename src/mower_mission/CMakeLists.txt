@@ -35,7 +35,12 @@ ament_target_dependencies(waypoint_follower_node
   visualization_msgs
 )
 
-install(TARGETS mission_loader mission_manager_node waypoint_follower_node
+add_executable(qgc_mission_converter_node src/qgc_mission_converter_node.cpp)
+ament_target_dependencies(qgc_mission_converter_node
+  rclcpp
+)
+
+install(TARGETS mission_loader mission_manager_node waypoint_follower_node qgc_mission_converter_node
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/
   DESTINATION include
