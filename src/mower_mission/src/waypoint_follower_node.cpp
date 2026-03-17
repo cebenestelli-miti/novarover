@@ -97,7 +97,9 @@ public:
     follow_bad_global_ticks_(0),
     rejoin_x_(0.0),
     rejoin_y_(0.0),
-    have_rejoin_pose_(false)
+    have_rejoin_pose_(false),
+    drift_ticks_(0),
+    drift_heading_err_max_(0.0)
   {
     declare_parameter("waypoint_tolerance_m",       0.5);
     declare_parameter("max_linear_speed",           0.5);
@@ -110,6 +112,8 @@ public:
     declare_parameter("mission_frame_id",           std::string("odom"));
     declare_parameter("debug_log",                  true);
     declare_parameter("debug_log_period_ms",        1000);
+    // Drift test: periodic one-line log for long missions (0 = disabled).
+    declare_parameter("drift_check_ticks",           0);    // log every N control ticks (e.g. 200 = 20 s at 100 ms)
 
     // Bug behavior tuning (aligned with ultrasonic_guard defaults: stop=0.30, blocked=1.20, caution=2.0)
     declare_parameter("bug_trigger_dist_m",              2.0);   // enter BUG when in ultrasonic CAUTION
@@ -183,6 +187,9 @@ public:
     declare_parameter("bug_side_stop_dist_m",           0.35);  // below this + moving toward side: stop and turn away
     declare_parameter("bug_side_recovery_angular",      0.28);  // turn-away rate in recovery zone
     declare_parameter("bug_side_recovery_speed_ms",     0.12);  // max speed when in side recovery
+    // Unreachable waypoint skip: only in FOLLOW_OBSTACLE.
+    declare_parameter("bug_skip_no_progress_ticks",    200);   // no progress toward waypoint for this many ticks (~20 s at 100ms) -> skip
+    declare_parameter("bug_skip_orbit_rotation_rad",    6.283185307);  // total rotation > 2*pi (one full orbit) -> skip
 
     waypoint_tolerance_  = get_parameter("waypoint_tolerance_m").as_double();
     max_linear_speed_    = get_parameter("max_linear_speed").as_double();
@@ -190,6 +197,7 @@ public:
     mission_frame_id_    = get_parameter("mission_frame_id").as_string();
     debug_log_           = get_parameter("debug_log").as_bool();
     debug_log_period_ms_ = get_parameter("debug_log_period_ms").as_int();
+    drift_check_ticks_   = get_parameter("drift_check_ticks").as_int();
     trigger_dist_        = get_parameter("bug_trigger_dist_m").as_double();
     hard_block_dist_     = get_parameter("bug_hard_block_dist_m").as_double();
     follow_speed_        = get_parameter("bug_follow_speed_ms").as_double();
@@ -250,6 +258,8 @@ public:
     side_stop_dist_m_       = get_parameter("bug_side_stop_dist_m").as_double();
     side_recovery_angular_ = get_parameter("bug_side_recovery_angular").as_double();
     side_recovery_speed_   = get_parameter("bug_side_recovery_speed_ms").as_double();
+    skip_no_progress_ticks_ = get_parameter("bug_skip_no_progress_ticks").as_int();
+    skip_orbit_rotation_rad_ = get_parameter("bug_skip_orbit_rotation_rad").as_double();
 
     loadWaypoints();
 
@@ -343,6 +353,8 @@ private:
       front_blocked_ticks_ = 0;
       blocked_ticks_ = 0;
       side_lost_ticks_ = 0;
+      drift_ticks_ = 0;
+      drift_heading_err_max_ = 0.0;
     }
   }
   void on_odom(const nav_msgs::msg::Odometry::SharedPtr msg)
@@ -975,6 +987,19 @@ private:
     const double desired_yaw = std::atan2(gy - y, gx - x);
     const double heading_err = wrapAngle(desired_yaw - yaw);
 
+    // ── Drift test: periodic log for long-mission quality (no nav logic change) ─
+    if (drift_check_ticks_ > 0) {
+      drift_heading_err_max_ = std::max(drift_heading_err_max_, std::fabs(heading_err));
+      drift_ticks_++;
+      if (drift_ticks_ >= drift_check_ticks_) {
+        RCLCPP_INFO(get_logger(),
+          "DRIFT_CHECK wp=%zu/%zu dist=%.2f heading_err_max_rad=%.3f",
+          idx, waypoints_.size() / 2u, dist, drift_heading_err_max_);
+        drift_ticks_ = 0;
+        drift_heading_err_max_ = 0.0;
+      }
+    }
+
     // ── Waypoint reached ──────────────────────────────────────────────────────
     if (dist < waypoint_tolerance_) {
       const bool was_in_lockout = (dist < goal_lockout_dist_m_);
@@ -1147,6 +1172,34 @@ private:
         }
       }
     } else if (nav_state_ == NavState::FOLLOW_OBSTACLE) {
+      // Unreachable waypoint skip: no progress timeout or full-orbit detection.
+      const bool skip_no_progress = (no_progress_ticks_ >= skip_no_progress_ticks_);
+      const bool skip_orbit = (total_rotation_rad_ > skip_orbit_rotation_rad_);
+      if (skip_no_progress || skip_orbit) {
+        RCLCPP_WARN(get_logger(),
+          "Skipping unreachable waypoint idx=%zu (no_progress_ticks=%d, total_rotation_rad=%.2f)",
+          idx, no_progress_ticks_, total_rotation_rad_);
+        current_waypoint_index_++;
+        nav_state_ = NavState::GO_TO_GOAL;
+        follow_phase_ = FollowPhase::DRIVE_ALONG;
+        front_blocked_ticks_ = 0;
+        blocked_ticks_ = 0;
+        side_lost_ticks_ = 0;
+        follow_ticks_ = 0;
+        no_progress_ticks_ = 0;
+        total_rotation_rad_ = 0.0;
+        follow_cooldown_ticks_ = 0;
+        have_rejoin_pose_ = false;
+        if (current_waypoint_index_ * 2u + 1u >= waypoints_.size() && !complete_sent_) {
+          RCLCPP_INFO(get_logger(), "All waypoints reached (with skips) – calling mission/complete");
+          complete_sent_ = true;
+          requestComplete();
+        }
+        cmd.linear.x = 0.0;
+        cmd.angular.z = 0.0;
+        cmd_vel_pub_->publish(cmd);
+        return;
+      }
       runFollowObstacle(cmd, x, y, yaw, gx, gy);
     } else { // BLOCKED_STOP
       // BLOCKED_STOP is latched: remain stopped until mission/reset/operator action.
@@ -1279,6 +1332,8 @@ private:
   double     side_stop_dist_m_;
   double     side_recovery_angular_;
   double     side_recovery_speed_;
+  int        skip_no_progress_ticks_;   // unreachable skip: no progress for this many ticks -> skip waypoint
+  double     skip_orbit_rotation_rad_;  // unreachable skip: total rotation > this (e.g. 2*pi) -> skip waypoint
 
   // Bug state
   NavState   nav_state_;
@@ -1319,6 +1374,11 @@ private:
   nav_msgs::msg::Odometry::SharedPtr            last_odom_;
   mower_msgs::msg::UltrasonicArray::SharedPtr   last_ultrasonic_;
   nav_msgs::msg::Path                           path_msg_;
+
+  // Drift test (lightweight; no nav logic change)
+  int    drift_check_ticks_;     // 0 = off; >0 = log every N ticks
+  int    drift_ticks_;
+  double drift_heading_err_max_;
 };
 
 int main(int argc, char** argv)

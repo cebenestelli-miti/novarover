@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import random
 from typing import Optional
 
 import rclpy
@@ -74,6 +75,13 @@ class MockBaseInterfaceNode(Node):
         self.declare_parameter('base_frame_id', 'base_link')
         self.declare_parameter('publish_ultrasonic', True)
         self.declare_parameter('publish_odom', True)
+        # Sensor noise test (simulation layer only): realistic noise, false obstacles, dropouts.
+        self.declare_parameter('sensor_noise_test', False)
+        self.declare_parameter('ultrasonic_noise_std_m', 0.05)
+        self.declare_parameter('ultrasonic_false_obstacle_prob', 0.02)
+        self.declare_parameter('ultrasonic_false_obstacle_range_m', 0.4)
+        self.declare_parameter('ultrasonic_dropout_prob', 0.01)
+        self.declare_parameter('ultrasonic_dropout_max_ticks', 2)
 
         self.publish_rate_hz = self.get_parameter('publish_rate_hz').value
         self.ultrasonic_clear = self.get_parameter('ultrasonic_clear_range_m').value
@@ -107,6 +115,31 @@ class MockBaseInterfaceNode(Node):
 
         self.stop_asserted = False
         self.last_cmd_vel = Twist()
+        # Sensor noise test state
+        sn = self.get_parameter('sensor_noise_test').value
+        self.sensor_noise_test = sn if isinstance(sn, bool) else (str(sn).lower() == 'true')
+        if self.sensor_noise_test:
+            self.ultrasonic_noise_std = float(self.get_parameter('ultrasonic_noise_std_m').value)
+            self.ultrasonic_false_obstacle_prob = float(
+                self.get_parameter('ultrasonic_false_obstacle_prob').value
+            )
+            self.ultrasonic_false_obstacle_range = float(
+                self.get_parameter('ultrasonic_false_obstacle_range_m').value
+            )
+            self.ultrasonic_dropout_prob = float(
+                self.get_parameter('ultrasonic_dropout_prob').value
+            )
+            self.ultrasonic_dropout_max_ticks = int(
+                self.get_parameter('ultrasonic_dropout_max_ticks').value
+            )
+            self.dropout_ticks_remaining = 0
+            self.get_logger().info(
+                'Sensor noise test ON: noise_std=%.3f false_obstacle_prob=%.3f dropout_prob=%.3f' % (
+                    self.ultrasonic_noise_std,
+                    self.ultrasonic_false_obstacle_prob,
+                    self.ultrasonic_dropout_prob,
+                )
+            )
 
         self.heartbeat_pub = self.create_publisher(Empty, '/base/heartbeat', 10)
         if self.publish_odom:
@@ -182,6 +215,17 @@ class MockBaseInterfaceNode(Node):
                 ranges[0] = ranges[1] = ranges[2] = float(self.simulate_obstacle_range_m)
             elif self.virtual_obstacle_radius > 0.0 or self.virtual_obstacle2_radius > 0.0:
                 ranges = self._virtual_obstacle_ranges()
+            # Sensor noise test: inject noise, occasional false obstacles, and short dropouts
+            if getattr(self, 'sensor_noise_test', False):
+                ranges = self._apply_sensor_noise(ranges)
+                if getattr(self, 'dropout_ticks_remaining', 0) > 0:
+                    self.dropout_ticks_remaining -= 1
+                    # Skip publish this tick (brief dropout; guard will see timeout and allow motion)
+                    return
+                if random.random() < self.ultrasonic_dropout_prob:
+                    self.dropout_ticks_remaining = random.randint(
+                        1, max(1, self.ultrasonic_dropout_max_ticks)
+                    )
             ua = UltrasonicArray()
             ua.header.stamp = now
             ua.header.frame_id = self.base_frame_id
@@ -189,6 +233,23 @@ class MockBaseInterfaceNode(Node):
             ua.min_range_m = float(self.ultrasonic_min)
             ua.max_range_m = float(self.ultrasonic_max)
             self.ultrasonic_pub.publish(ua)
+
+    def _apply_sensor_noise(self, ranges: list) -> list:
+        """Apply Gaussian noise and occasional false obstacle (simulation layer only)."""
+        out = []
+        for i, r in enumerate(ranges):
+            noise = random.gauss(0.0, self.ultrasonic_noise_std)
+            v = float(r) + noise
+            v = max(self.ultrasonic_min, min(self.ultrasonic_max, v))
+            out.append(v)
+        # Occasional false obstacle: one front sensor reports a short range
+        if random.random() < self.ultrasonic_false_obstacle_prob:
+            idx = random.randint(0, 2)  # 0=front_left, 1=front_center, 2=front_right
+            out[idx] = max(
+                self.ultrasonic_min,
+                min(self.ultrasonic_max, self.ultrasonic_false_obstacle_range),
+            )
+        return out
 
     def _publish_obstacle_markers(self):
         if self.obstacle_markers_pub is None:

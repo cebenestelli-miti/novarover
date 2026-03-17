@@ -170,6 +170,14 @@ def generate_launch_description():
                     "spawn the mock base near the first waypoint for easier RViz viewing."
                 ),
             ),
+            DeclareLaunchArgument(
+                "drift_check_ticks",
+                default_value="0",
+                description=(
+                    "If >0, waypoint_follower logs DRIFT_CHECK every N ticks (e.g. 200 = 20 s) "
+                    "for long-mission drift tests. 0 = disabled."
+                ),
+            ),
             # Mock base (simulated odometry + ultrasonics), optionally auto-spawned
             # near the first WGS84 waypoint when requested.
             OpaqueFunction(function=_make_mock_base_node),
@@ -234,6 +242,7 @@ def generate_launch_description():
                         "debug_obstacle3_center_x": 8.5,
                         "debug_obstacle3_center_y": 0.7,
                         "debug_obstacle3_radius_m": 0.5,
+                        "drift_check_ticks": LaunchConfiguration("drift_check_ticks"),
                     },
                 ],
             ),

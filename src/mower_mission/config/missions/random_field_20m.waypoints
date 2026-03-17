@@ -1,0 +1,13 @@
+# Random obstacle field mission (odom frame, meters).
+# Start near origin and weave through a 20 m x 20 m area.
+# Waypoints chosen so that obstacles at ~ (5,1.5), (10,-2.0), (15,0.5)
+# lie on or very near the path.
+0.0 0.0
+4.0 1.0
+7.0 2.0
+10.0 -1.5
+13.0 -3.0
+16.0 0.8
+19.0 2.0
+20.0 0.0
+
